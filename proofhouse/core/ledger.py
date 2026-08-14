@@ -22,7 +22,6 @@ import json
 import os
 from datetime import datetime, timezone
 
-from proofhouse.chain.canonical import canonical_bytes
 from proofhouse.chain.hashing import content_hash
 
 
@@ -184,14 +183,19 @@ class Ledger:
 
         self._rows.append(row)
 
-        # Write to disk immediately using canonical JSON
+        # Write to disk immediately. We use json.dumps (not canonical_bytes)
+        # because canonical_bytes strips 'hash' — which is correct for hashing
+        # but wrong for storage. The on-disk format must include 'hash' so
+        # that verify() works after reload.
         parent_dir = os.path.dirname(self._path)
         if parent_dir:
             os.makedirs(parent_dir, exist_ok=True)
         with open(self._path, "a") as f:
-            # Use canonical serialization for consistency
-            raw = canonical_bytes(row)
-            f.write(raw.decode("utf-8") + "\n")
+            line = json.dumps(
+                row, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            f.write(line + "\n")
 
     def verify(self):
         """Verify the hash chain integrity of all ledger rows.

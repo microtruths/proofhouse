@@ -3,14 +3,13 @@
 Append-only registry for proofhouse entries.
 
 Entries are stored as YAML files in registry/H-YYYY-NNN.yaml.
-Each entry is validated (V1–V11, E1–E6), hashed, and chained
+Each entry is validated (V1–V12, E1–E6), hashed, and chained
 before being written to disk.
 
 Registration fails loudly on any validation error.
 """
 
 import copy
-import json
 import os
 from datetime import datetime, timezone
 
@@ -106,7 +105,7 @@ class Registry:
     def register(self, entry):
         """Validate, hash, chain, and persist a new entry.
 
-        Runs all validation checks (V1–V11, E1–E6). On any failure,
+        Runs all validation checks (V1–V12, E1–E6). On any failure,
         raises ValidationError with all errors collected.
 
         On success, the entry is:
@@ -142,7 +141,7 @@ class Registry:
                 "Entry {} already exists in the registry".format(entry["id"])
             )
 
-        # Validate (V1–V11, E1–E6)
+        # Validate (V1–V12, E1–E6)
         validate_entry(
             entry,
             block_registry=self._block_registry,

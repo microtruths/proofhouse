@@ -54,7 +54,7 @@ def canonical_bytes(record):
 
 
 def _strip_and_validate(obj, top_level=False):
-    """Recursively strip nulls and reject floats. Strip hash/prev at top level only.
+    """Recursively strip nulls and reject floats. Strip hash at top level only.
 
     Returns a cleaned copy of the object suitable for canonical serialization.
     """

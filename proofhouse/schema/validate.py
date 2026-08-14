@@ -51,7 +51,7 @@ class ValidationError(Exception):
 def validate_entry(entry, block_registry=None, existing_entries=None):
     """Validate a registry entry against all checks.
 
-    Runs schema validators (V1–V11) and behavioral checks (E1–E6).
+    Runs schema validators (V1–V12) and behavioral checks (E1–E6).
 
     Args:
         entry: Dict representing the registry entry.
@@ -107,7 +107,7 @@ def validate_entry(entry, block_registry=None, existing_entries=None):
                     "numeric decimal strings. Got: {!r}".format(sleeve_range)
                 )
 
-    # --- Schema validators (V1–V11) ---
+    # --- Schema validators (V1–V12) ---
 
     # V-1: Counterparty rejects benchmark terms
     counterparty = _nested_get(entry, "mechanism", "counterparty")

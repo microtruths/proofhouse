@@ -4,7 +4,8 @@ SHA-256 content hashing over canonical bytes.
 
 Phase 0 Build Plan §3:
     Hash is computed over the canonical byte representation of a record.
-    The 'hash' and 'prev' fields are excluded from the payload before hashing.
+    Only the 'hash' field is excluded from the payload before hashing.
+    'prev' IS included — see failure catalog #27.
     Result format: 'sha256:<hex>'
 """
 

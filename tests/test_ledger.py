@@ -278,3 +278,39 @@ class TestLedger:
         ledger2 = Ledger(path)
         assert ledger2.count_trials("uA") == 2, "Overlap must survive reload"
         assert ledger2.count_trials("uB") == 2
+
+    def test_l9_verify_survives_reload(self):
+        """L-9: verify() passes after reload from disk.
+
+        This is the round-trip integrity test. Write rows, reload from
+        the JSONL file, and verify the chain. If hash were missing from
+        the on-disk format, this test would fail.
+        """
+        tmpdir = tempfile.mkdtemp()
+        path = os.path.join(tmpdir, "ledger.jsonl")
+
+        # Session 1: write rows
+        ledger1 = Ledger(path)
+        ledger1.append_row(code_hash="c1", data_hash="d1", universe="u1",
+                           kind="explore", blocks_touched=[], stats_scored=[])
+        ledger1.append_row(code_hash="c2", data_hash="d2", universe="u1",
+                           kind="eval", blocks_touched=[], stats_scored=[])
+        ledger1.append_row(code_hash="c3", data_hash="d3", universe="u1",
+                           kind="gate", blocks_touched=[], stats_scored=[])
+
+        # In-memory verify
+        ok1, errors1 = ledger1.verify()
+        assert ok1, "In-memory chain must verify"
+
+        # Session 2: reload and verify
+        ledger2 = Ledger(path)
+        ok2, errors2 = ledger2.verify()
+        assert ok2, (
+            "Reloaded chain must verify. Errors: {}".format(errors2)
+        )
+
+        # Also verify hash and prev are present
+        rows = ledger2.all_rows()
+        assert rows[0].get("hash") is not None, "hash must survive reload"
+        assert "prev" not in rows[0], "genesis has no prev"
+        assert rows[1].get("prev") == rows[0].get("hash")

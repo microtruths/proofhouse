@@ -219,3 +219,46 @@ class TestBlocks:
         block = reg.get_block("B-PENDING")
         assert block["data_complete"] is True
         assert block["completed_at"] == "2026-08-14T00:00:00Z"
+
+    def test_persistence_round_trip(self):
+        """Path-backed BlockRegistry survives reload.
+
+        Add blocks, consume one, reload from disk, and verify state.
+        """
+        import os
+        import tempfile
+
+        tmpdir = tempfile.mkdtemp()
+        path = os.path.join(tmpdir, "blocks.yaml")
+
+        # Session 1: create and mutate
+        reg1 = BlockRegistry(path=path)
+        reg1.add_block({
+            "id": "B-RT-01",
+            "start": "2025-01-01T00:00:00Z",
+            "end": "2025-03-01T00:00:00Z",
+            "segment": "E",
+            "data_complete": True,
+            "completed_at": "2025-04-01T00:00:00Z",
+            "sources": ["test"],
+            "seams": [],
+        })
+        reg1.add_block({
+            "id": "B-RT-02",
+            "start": "2025-03-01T00:00:00Z",
+            "end": "2025-05-01T00:00:00Z",
+            "segment": "V",
+            "data_complete": True,
+            "completed_at": "2025-06-01T00:00:00Z",
+            "sources": ["test"],
+            "seams": [],
+        })
+        reg1.consume_block("B-RT-02", "H-001")
+
+        # Session 2: reload from disk
+        reg2 = BlockRegistry(path=path)
+        assert len(reg2.list_blocks()) == 2
+        block = reg2.get_block("B-RT-02")
+        assert block["segment"] == "V"
+        assert len(block["consumed_by"]) == 1
+        assert block["consumed_by"][0]["entry_id"] == "H-001"

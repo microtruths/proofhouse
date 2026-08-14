@@ -2,7 +2,7 @@
 """
 Phase 0 Build Plan §6 — Validation tests.
 
-Tests V-1 through V-10. Written before implementation.
+Tests V-1 through V-12. Written before implementation.
 Each test uses a well-formed base entry and breaks exactly one thing.
 """
 

@@ -245,7 +245,7 @@ def explore(universe, blocks_touched, stats_scored, kind, outcome):
 def register(entry_file):
     """Register a hypothesis from a YAML file.
 
-    Runs V1–V11 + E1–E6 validation. Refuses loudly on any failure.
+    Runs V1–V12 + E1–E6 validation. Refuses loudly on any failure.
     On success: hashes, chains, persists to the registry.
     """
     root = _get_root()

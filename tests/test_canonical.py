@@ -7,7 +7,7 @@ Spec text from §3 of the Phase 0 build plan:
 
     "Everything downstream depends on byte-identical serialization. Rules:
      1. JSON, sort_keys=True, separators=(',', ':'), ensure_ascii=False, UTF-8.
-     2. hash and prev are excluded from the hashed payload.
+     2. Only 'hash' is excluded from the hashed payload (prev IS included).
      3. Floats are forbidden in hashed records. Numeric thresholds are stored
         as decimal strings ('0.05', not 0.05).
      4. Timestamps are RFC3339 UTC with Z, second precision.
