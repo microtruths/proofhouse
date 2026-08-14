@@ -35,15 +35,22 @@ class TestCanonicalSerialization:
         result = canonical_bytes(record)
         assert result == b'{"a":2,"b":1,"nested":{"y":2,"z":1}}'
 
-    def test_c2_hash_and_prev_excluded(self):
-        """C-2: Two records differing only in `hash` produce identical canonical bytes.
+    def test_c2_hash_excluded_prev_included(self):
+        """C-2: Only `hash` is excluded. `prev` IS included.
 
-        The `hash` and `prev` fields cannot be part of the hashed payload —
-        a record cannot hash a field containing its own hash.
+        Failure catalog #27: excluding prev gave content integrity without
+        history integrity. prev is known before the hash is computed, so it
+        can and must be covered.
+
+        Records differing only in `hash` → identical canonical bytes.
+        Records differing in `prev` → DIFFERENT canonical bytes.
         """
         rec_a = {"id": "H-001", "status": "registered", "hash": "sha256:aaa", "prev": "sha256:bbb"}
-        rec_b = {"id": "H-001", "status": "registered", "hash": "sha256:zzz", "prev": "sha256:yyy"}
-        assert canonical_bytes(rec_a) == canonical_bytes(rec_b)
+        rec_b = {"id": "H-001", "status": "registered", "hash": "sha256:zzz", "prev": "sha256:bbb"}
+        assert canonical_bytes(rec_a) == canonical_bytes(rec_b), "hash is excluded"
+
+        rec_c = {"id": "H-001", "status": "registered", "hash": "sha256:aaa", "prev": "sha256:yyy"}
+        assert canonical_bytes(rec_a) != canonical_bytes(rec_c), "prev is included"
 
     def test_c3_null_omitted(self):
         """C-3: null values are omitted, not serialized.

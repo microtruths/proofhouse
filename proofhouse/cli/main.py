@@ -56,32 +56,10 @@ def _ensure_dirs(root):
     return dirs
 
 
-def _load_block_registry(root):
-    """Load blocks from the blocks directory."""
-    blocks_dir = os.path.join(root, ".proofhouse", "blocks")
-    reg = BlockRegistry()
-    if os.path.exists(blocks_dir):
-        blocks_file = os.path.join(blocks_dir, "blocks.yaml")
-        if os.path.exists(blocks_file):
-            with open(blocks_file) as f:
-                data = yaml.safe_load(f) or {}
-            for block in data.get("blocks", []):
-                try:
-                    reg.add_block(block)
-                except (ValueError, KeyError):
-                    pass  # Skip malformed blocks on load
-    return reg
-
-
-def _save_block_registry(root, block_reg):
-    """Save blocks to disk."""
-    blocks_dir = os.path.join(root, ".proofhouse", "blocks")
-    os.makedirs(blocks_dir, exist_ok=True)
-    blocks_file = os.path.join(blocks_dir, "blocks.yaml")
-    data = {"schema_version": 1, "blocks": block_reg.list_blocks()}
-    with open(blocks_file, "w") as f:
-        yaml.dump(data, f, default_flow_style=False, sort_keys=True,
-                  allow_unicode=True)
+def _get_block_registry(root):
+    """Get a path-backed BlockRegistry for the project."""
+    blocks_file = os.path.join(root, ".proofhouse", "blocks", "blocks.yaml")
+    return BlockRegistry(path=blocks_file)
 
 
 @click.group()
@@ -138,14 +116,13 @@ def blocks():
 def blocks_add(block_file):
     """Add a block from a YAML file."""
     root = _get_root()
-    block_reg = _load_block_registry(root)
+    block_reg = _get_block_registry(root)
 
     with open(block_file) as f:
         block = yaml.safe_load(f)
 
     try:
         block_reg.add_block(block)
-        _save_block_registry(root, block_reg)
         click.echo("Added block: {}".format(block["id"]))
     except (ValueError, KeyError) as e:
         click.echo("Error: {}".format(e), err=True)
@@ -156,7 +133,7 @@ def blocks_add(block_file):
 def blocks_list():
     """List all blocks."""
     root = _get_root()
-    block_reg = _load_block_registry(root)
+    block_reg = _get_block_registry(root)
     all_blocks = block_reg.list_blocks()
 
     if not all_blocks:
@@ -187,12 +164,11 @@ def blocks_list():
 def blocks_complete(block_id):
     """Record the data-completion event for a block (A6)."""
     root = _get_root()
-    block_reg = _load_block_registry(root)
+    block_reg = _get_block_registry(root)
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         block_reg.complete_block(block_id, ts)
-        _save_block_registry(root, block_reg)
         click.echo("Completed block {} at {}".format(block_id, ts))
     except (ValueError, KeyError) as e:
         click.echo("Error: {}".format(e), err=True)
@@ -205,11 +181,10 @@ def blocks_complete(block_id):
 def blocks_promote(block_id, segment):
     """Promote a block to a higher segment (e.g., R→V)."""
     root = _get_root()
-    block_reg = _load_block_registry(root)
+    block_reg = _get_block_registry(root)
 
     try:
         block_reg.promote_block(block_id, segment)
-        _save_block_registry(root, block_reg)
         click.echo("Promoted block {} to segment {}".format(block_id, segment))
     except (ValueError, KeyError) as e:
         click.echo("Error: {}".format(e), err=True)
@@ -279,7 +254,7 @@ def register(entry_file):
     with open(entry_file) as f:
         entry = yaml.safe_load(f)
 
-    block_reg = _load_block_registry(root)
+    block_reg = _get_block_registry(root)
     reg_dir = os.path.join(root, ".proofhouse", "registry")
     registry = Registry(reg_dir, block_registry=block_reg)
 
@@ -327,7 +302,7 @@ def status():
         click.echo("No ledger found. Run 'proofhouse init' first.")
 
     # Block status
-    block_reg = _load_block_registry(root)
+    block_reg = _get_block_registry(root)
     all_blocks = block_reg.list_blocks()
     if all_blocks:
         click.echo("\n=== Blocks ===")

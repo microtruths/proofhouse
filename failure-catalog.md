@@ -58,6 +58,12 @@ Errors were made by every participant: the human's plan drafts, the primary revi
 > a dangling reference from a locked document, itself an instance of the registry-rot failure
 > mode. Landed 2026-08-14. See open-decisions register D5.
 
+| **27** | **Hash chain excluded `prev` from canonical bytes — content integrity without history integrity.** Build plan §3 rule 2 said "hash and prev are excluded." The parenthetical justifies excluding `hash` (a record cannot hash its own hash) and extended it to `prev` without justification. `prev` is known before the hash is computed, so it can and must be covered. Because it wasn't, insertion and deletion attacks passed `verify_chain` cleanly — rewriting a record's `prev` didn't change its hash. Tests H-1–H-4 tested the *implementation* ("prev points to the right hash") rather than the *property* ("insertion and deletion are detected"). | Phase 0 build plan §3 (spec error), implemented faithfully | Independent code review + reproduction (insertion/deletion attacks verified programmatically) | **Test the property, not the implementation.** A hash chain that excludes `prev` links records by pointer but does not commit to its own history. Pairs with #26: that was two implementations of one spec; this is one faithful implementation of a wrong spec. Fix: exclude only `hash`. Add insertion/deletion attack tests (H-5, H-6). |
+
+> **Entry #27 provenance.** Found by independent code review 2026-08-14 during Phase 0
+> completion audit. The spec was wrong and the implementation was spec-faithful. Fix deployed
+> same day while only 2 registry entries + 1 ledger row existed (cheapest moment).
+
 ## Process lessons (meta)
 
 - **Review the diff AND the whole.** Several errors (#17, stale "200 draws" counts, a rejected-suggestion entry contradicting an adopted rule) were merge debris invisible to diff-only review.

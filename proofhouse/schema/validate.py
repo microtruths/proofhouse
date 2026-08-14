@@ -3,7 +3,7 @@
 Validation for proofhouse registry entries.
 
 Phase 0 Build Plan §5 — the six enforced checks (E1–E6) plus
-schema validators V1–V11.
+schema validators V1–V12.
 
 E1: Gate combination required, no default (A5)
 E2: Threshold anti-circularity — derived source_blocks may not have segment V (A2)
@@ -13,7 +13,7 @@ E5: Pass licensing — pass_licenses + pass_does_not_establish present, ≤200 c
 E6: Block availability — data_complete required; seams + V requires seam_acknowledged (A6)
 
 V-1:  Counterparty rejects benchmark terms
-V-2:  Parameters must be scalar, not ranges/lists
+V-2:  Parameters must be scalar, not ranges/lists/string-ranges
 V-3:  No gate.combination → rejected, no default
 V-4:  Derived threshold source_blocks containing segment-V → rejected
 V-5:  tie_handling key → rejected (field doesn't exist)
@@ -22,13 +22,18 @@ V-7:  benchmark_sensitivity with <2 entries → rejected
 V-8:  validation_blocks referencing segment-E → rejected
 V-9:  depends_on referencing nonexistent entry → rejected
 V-10: power_check.value.pending without fill_rule → rejected
+V-11: schema_version must be present and valid
+V-12: feasibility.sleeve_range must be a 2-element list of decimal strings
 """
+
+import re
 
 from proofhouse.schema.models import (
     VALID_COMPARATORS,
     VALID_SEGMENTS,
     is_benchmark_term,
 )
+from proofhouse.schema.versions import check_version
 
 
 class ValidationError(Exception):
@@ -58,6 +63,50 @@ def validate_entry(entry, block_registry=None, existing_entries=None):
     """
     errors = []
 
+    # V-11: schema_version must be present and valid
+    sv = entry.get("schema_version")
+    if sv is None:
+        errors.append(
+            "V-11: schema_version is missing. Every record must carry "
+            "a schema_version."
+        )
+    else:
+        try:
+            check_version(sv)
+        except ValueError as e:
+            errors.append("V-11: {}".format(e))
+
+    # V-12: feasibility.sleeve_range must be [min, max] decimal strings
+    sleeve_range = _nested_get(entry, "feasibility", "sleeve_range")
+    if sleeve_range is not None:
+        valid_range = True
+        if not isinstance(sleeve_range, list) or len(sleeve_range) != 2:
+            errors.append(
+                "V-12: feasibility.sleeve_range must be a 2-element list "
+                "[min, max]. Got: {!r}".format(sleeve_range)
+            )
+            valid_range = False
+        elif not all(isinstance(v, str) for v in sleeve_range):
+            errors.append(
+                "V-12: feasibility.sleeve_range elements must be decimal "
+                "strings. Got: {!r}".format(sleeve_range)
+            )
+            valid_range = False
+
+        if valid_range and isinstance(sleeve_range, list) and len(sleeve_range) == 2:
+            try:
+                lo, hi = float(sleeve_range[0]), float(sleeve_range[1])
+                if lo > hi:
+                    errors.append(
+                        "V-12: feasibility.sleeve_range[0] ({}) > "
+                        "sleeve_range[1] ({}).".format(sleeve_range[0], sleeve_range[1])
+                    )
+            except (ValueError, TypeError):
+                errors.append(
+                    "V-12: feasibility.sleeve_range values must be "
+                    "numeric decimal strings. Got: {!r}".format(sleeve_range)
+                )
+
     # --- Schema validators (V1–V11) ---
 
     # V-1: Counterparty rejects benchmark terms
@@ -69,7 +118,7 @@ def validate_entry(entry, block_registry=None, existing_entries=None):
             "comparison.".format(counterparty)
         )
 
-    # V-2: Parameters must be scalar values, not ranges/lists
+    # V-2: Parameters must be scalar values, not ranges/lists/string-ranges
     params = _nested_get(entry, "signal", "parameters") or {}
     for key, val in params.items():
         if isinstance(val, (list, tuple, dict)):
@@ -79,6 +128,11 @@ def validate_entry(entry, block_registry=None, existing_entries=None):
                 "a validation error, making grid search unregisterable.".format(
                     key, val, type(val).__name__
                 )
+            )
+        elif isinstance(val, str) and _looks_like_range(val):
+            errors.append(
+                "V-2: signal.parameters.{} has value '{}' which looks like a "
+                "range. Parameters must be fixed scalar values.".format(key, val)
             )
 
     # V-3 / E1: Gate combination required, no default
@@ -197,8 +251,14 @@ def validate_entry(entry, block_registry=None, existing_entries=None):
             )
 
     # --- E3: Diagnostics isolation (structural) ---
-    # The gate and diagnostics are separate types with no reference between them.
-    # This is enforced by structure: gate criteria cannot reference diagnostic names.
+    # A4 requires that the verdict function structurally cannot read diagnostics.
+    #
+    # Phase 0 limitation: this check only catches name collisions between gate
+    # criteria and diagnostic names. A gate could still consume a diagnostic's
+    # value under a different name — true structural isolation requires a
+    # data-flow boundary in the gate evaluation engine, which is Phase 2's
+    # gate/ module's responsibility. This check catches the obvious case;
+    # Phase 2 enforces the property.
     gate = entry.get("gate", {})
     diagnostics = entry.get("diagnostics", [])
     diag_names = {d.get("name") for d in diagnostics if isinstance(d, dict)}
@@ -217,6 +277,15 @@ def validate_entry(entry, block_registry=None, existing_entries=None):
         raise ValidationError(errors)
 
 
+# Pattern for string ranges like "10..14" or "10-14" (with digits on both sides)
+_RANGE_PATTERN = re.compile(r'^\d+\.{2,3}\d+$|^\d+-\d+$')
+
+
+def _looks_like_range(s):
+    """Check if a string looks like a numeric range (e.g., '10..14' or '10-14')."""
+    return bool(_RANGE_PATTERN.match(s))
+
+
 def _nested_get(d, *keys):
     """Safely get a nested dict value."""
     for key in keys:
@@ -230,7 +299,14 @@ def _check_no_field(entry, field_name, errors, message):
     """Check that a forbidden field doesn't appear anywhere in the entry."""
     if field_name in entry:
         errors.append(message)
-    # Also check inside gate
+    # Check inside gate
     gate = entry.get("gate", {})
-    if isinstance(gate, dict) and field_name in gate:
-        errors.append(message)
+    if isinstance(gate, dict):
+        if field_name in gate:
+            errors.append(message)
+        # Also check inside gate.criteria.* values
+        criteria = gate.get("criteria", {})
+        if isinstance(criteria, dict):
+            for crit_name, crit_val in criteria.items():
+                if isinstance(crit_val, dict) and field_name in crit_val:
+                    errors.append(message)

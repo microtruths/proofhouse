@@ -172,3 +172,109 @@ class TestLedger:
         """Counting trials for an unseen universe returns 0."""
         ledger = self._make_ledger()
         assert ledger.count_trials("never-seen") == 0
+
+    def test_l6_rows_carry_hash_and_prev(self):
+        """L-6: Ledger rows carry hash and prev fields forming a chain.
+
+        The ledger is the multiple-testing counter — the highest-value
+        tampering target. Every row must be chained.
+        """
+        ledger = self._make_ledger()
+
+        ledger.append_row(code_hash="c1", data_hash="d1", universe="u1",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+        ledger.append_row(code_hash="c2", data_hash="d2", universe="u1",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+
+        rows = ledger.all_rows()
+        assert "hash" in rows[0], "row 0 must have hash"
+        assert "prev" not in rows[0], "row 0 is genesis — no prev"
+        assert "hash" in rows[1], "row 1 must have hash"
+        assert "prev" in rows[1], "row 1 must have prev"
+        assert rows[1]["prev"] == rows[0]["hash"], "prev must point to preceding hash"
+
+    def test_l7_deletion_detected(self):
+        """L-7: Deleting a ledger row → chain verification fails.
+
+        Even if prev pointers are rewritten, the hash changes because
+        prev is included in the hashed payload.
+        """
+        tmpdir = tempfile.mkdtemp()
+        ledger = self._make_ledger(tmpdir)
+
+        ledger.append_row(code_hash="c1", data_hash="d1", universe="u1",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+        ledger.append_row(code_hash="c2", data_hash="d2", universe="u1",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+        ledger.append_row(code_hash="c3", data_hash="d3", universe="u1",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+
+        # Verify the intact chain
+        ok, errors = ledger.verify()
+        assert ok, "Intact chain should verify"
+
+        # Tamper: delete the middle row from disk and memory
+        import json
+        path = os.path.join(tmpdir, "ledger.jsonl")
+        with open(path) as f:
+            lines = [l.strip() for l in f if l.strip()]
+        assert len(lines) == 3
+
+        # Delete middle line and rewrite file
+        tampered_lines = [lines[0], lines[2]]
+        with open(path, "w") as f:
+            for line in tampered_lines:
+                f.write(line + "\n")
+
+        # Reload — should detect the break
+        ledger2 = Ledger(path)
+        ok2, errors2 = ledger2.verify()
+        assert not ok2, "Deletion should be detected"
+        assert len(errors2) > 0
+
+    def test_l8_canonical_json_on_disk(self):
+        """L-8: Ledger writes canonical JSON (sorted keys, compact separators)."""
+        tmpdir = tempfile.mkdtemp()
+        ledger = self._make_ledger(tmpdir)
+
+        ledger.append_row(code_hash="c1", data_hash="d1", universe="u1",
+                          kind="explore", blocks_touched=["B-1"],
+                          stats_scored=["alpha"])
+
+        import json
+        path = os.path.join(tmpdir, "ledger.jsonl")
+        with open(path) as f:
+            line = f.readline().strip()
+
+        # Canonical JSON has sorted keys and compact separators
+        parsed = json.loads(line)
+        # Re-serialize with canonical rules and verify it matches
+        reserialized = json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+        assert line == reserialized, (
+            "Ledger should write canonical JSON. Got:\n{}\nExpected:\n{}".format(
+                line, reserialized
+            )
+        )
+
+    def test_overlap_persisted_across_sessions(self):
+        """Overlap declarations survive reload.
+
+        Declarations are stored as special rows in the JSONL,
+        so they are replayed on init.
+        """
+        tmpdir = tempfile.mkdtemp()
+        path = os.path.join(tmpdir, "ledger.jsonl")
+
+        # Session 1: declare overlap and add rows
+        ledger1 = Ledger(path)
+        ledger1.declare_overlap("uA", "uB")
+        ledger1.append_row(code_hash="c1", data_hash="d1", universe="uA",
+                           kind="explore", blocks_touched=[], stats_scored=[])
+        ledger1.append_row(code_hash="c2", data_hash="d2", universe="uB",
+                           kind="explore", blocks_touched=[], stats_scored=[])
+        assert ledger1.count_trials("uA") == 2
+
+        # Session 2: reload — overlap should be replayed
+        ledger2 = Ledger(path)
+        assert ledger2.count_trials("uA") == 2, "Overlap must survive reload"
+        assert ledger2.count_trials("uB") == 2

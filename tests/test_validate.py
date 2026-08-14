@@ -335,3 +335,69 @@ class TestValidation:
             validate_entry(entry)
 
         assert len(exc_info.value.errors) >= 4
+
+    def test_v11_missing_schema_version_rejected(self):
+        """V-11: missing schema_version → rejected."""
+        entry = _make_valid_entry()
+        del entry["schema_version"]
+
+        with pytest.raises(ValidationError, match="V-11"):
+            validate_entry(entry)
+
+    def test_v11_future_schema_version_rejected(self):
+        """V-11: schema_version from a newer proofhouse → rejected."""
+        entry = _make_valid_entry()
+        entry["schema_version"] = 999
+
+        with pytest.raises(ValidationError, match="V-11"):
+            validate_entry(entry)
+
+    def test_v11_valid_schema_version_accepted(self):
+        """V-11 complement: schema_version = 1 → accepted."""
+        entry = _make_valid_entry()
+        entry["schema_version"] = 1
+        validate_entry(entry)
+
+    def test_v12_sleeve_range_not_list_rejected(self):
+        """V-12: sleeve_range as a scalar → rejected."""
+        entry = _make_valid_entry()
+        entry["feasibility"]["sleeve_range"] = "100"
+
+        with pytest.raises(ValidationError, match="V-12"):
+            validate_entry(entry)
+
+    def test_v12_sleeve_range_inverted_rejected(self):
+        """V-12: sleeve_range where min > max → rejected."""
+        entry = _make_valid_entry()
+        entry["feasibility"]["sleeve_range"] = ["20000", "100"]
+
+        with pytest.raises(ValidationError, match="V-12"):
+            validate_entry(entry)
+
+    def test_v12_sleeve_range_valid_accepted(self):
+        """V-12 complement: valid 2-element decimal string list → accepted."""
+        entry = _make_valid_entry()
+        entry["feasibility"]["sleeve_range"] = ["100", "20000"]
+        validate_entry(entry)
+
+    def test_v2_string_range_rejected(self):
+        """V-2: string range like '10..14' → rejected."""
+        entry = _make_valid_entry()
+        entry["signal"]["parameters"] = {"k": "10..14"}
+
+        with pytest.raises(ValidationError, match="V-2"):
+            validate_entry(entry)
+
+    def test_e3_limitation_documented(self):
+        """E3 limitation: different name referencing diagnostic value → NOT caught.
+
+        Phase 0 limitation: E3 only catches name collisions. True structural
+        isolation requires the gate evaluation engine (Phase 2).
+        This test documents the limitation.
+        """
+        entry = _make_valid_entry()
+        entry["diagnostics"] = [{"name": "mark_dependence", "trigger": ">0.5"}]
+        # Gate criterion 'g1' has a different name than diagnostic 'mark_dependence'
+        # so E3 does not catch this case — but it could still read the value
+        # in practice. This is the documented Phase 0 limitation.
+        validate_entry(entry)  # Should pass (limitation)

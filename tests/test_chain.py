@@ -119,3 +119,49 @@ class TestChain:
         ok, errors = verify_chain([])
         assert ok
         assert errors == []
+
+    def test_h5_insertion_attack_detected(self):
+        """H-5: Inserting a back-dated record mid-chain → verification fails.
+
+        Failure catalog #27: this attack previously passed because prev was
+        excluded from the hashed payload. Now that prev is included, rewriting
+        a record's prev changes its hash, and verification catches it.
+        """
+        records = self._make_records()
+        chained = build_chain(records)
+
+        # Insert a forged record between index 0 and 1
+        forged = {"id": "H-forged", "data": "backdated"}
+        forged["prev"] = chained[0]["hash"]
+        forged["hash"] = content_hash(forged)
+
+        tampered = list(chained)
+        tampered.insert(1, forged)
+        # Rewrite the following record's prev to point to the forged record
+        tampered[2]["prev"] = forged["hash"]
+        # Do NOT recompute tampered[2]'s hash — that would require the
+        # attacker to also rewrite every downstream record
+
+        ok, errors = verify_chain(tampered)
+        assert not ok, "Insertion attack should be detected"
+        # The error should be at index 2 (the record whose prev was rewritten)
+        assert any(e["index"] == 2 for e in errors)
+
+    def test_h6_deletion_attack_detected(self):
+        """H-6: Deleting a middle record → verification fails.
+
+        Even if the attacker rewrites prev pointers to stitch the gap,
+        the hash changes because prev is included in the hashed payload.
+        """
+        records = self._make_records()
+        chained = build_chain(records)
+
+        # Delete the middle record
+        shortened = [chained[0], chained[2].copy()]
+        # Rewrite prev to stitch the gap
+        shortened[1]["prev"] = shortened[0]["hash"]
+        # Do NOT recompute the hash — it would differ from stored
+
+        ok, errors = verify_chain(shortened)
+        assert not ok, "Deletion attack should be detected"
+        assert any(e["index"] == 1 for e in errors)

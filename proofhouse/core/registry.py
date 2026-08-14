@@ -45,8 +45,15 @@ class Registry:
             self._load()
 
     def _load(self):
-        """Load all entries from disk, ordered by created_utc."""
-        entries = []
+        """Load all entries from disk, ordered by walking prev pointers.
+
+        Chain order is reconstructed by following the prev → hash links,
+        starting from the genesis record (the one with no prev).
+        This is authoritative — timestamp sort would break on
+        same-second collisions.
+        """
+        # Load all entries from disk
+        all_entries = {}
         for fname in sorted(os.listdir(self._dir)):
             if not fname.endswith(".yaml"):
                 continue
@@ -54,12 +61,47 @@ class Registry:
             with open(path) as f:
                 entry = yaml.safe_load(f)
             if entry and isinstance(entry, dict):
-                entries.append(entry)
+                entry_hash = entry.get("hash")
+                if entry_hash:
+                    all_entries[entry_hash] = entry
 
-        # Sort by creation time for chain ordering
-        entries.sort(key=lambda e: e.get("created_utc", ""))
-        self._chain = entries
-        self._entries = {e["id"]: e for e in entries}
+        if not all_entries:
+            return
+
+        # Find genesis (no prev field)
+        genesis = None
+        for entry in all_entries.values():
+            if "prev" not in entry:
+                genesis = entry
+                break
+
+        if genesis is None:
+            # Fallback: if no genesis found, sort by created_utc
+            # (handles pre-chain records, shouldn't happen in practice)
+            entries = sorted(
+                all_entries.values(),
+                key=lambda e: e.get("created_utc", ""),
+            )
+            self._chain = entries
+            self._entries = {e["id"]: e for e in entries}
+            return
+
+        # Walk the chain from genesis
+        chain = [genesis]
+        # Build reverse index: prev_hash → entry
+        by_prev = {}
+        for entry in all_entries.values():
+            prev = entry.get("prev")
+            if prev:
+                by_prev[prev] = entry
+
+        current = genesis
+        while current["hash"] in by_prev:
+            current = by_prev[current["hash"]]
+            chain.append(current)
+
+        self._chain = chain
+        self._entries = {e["id"]: e for e in chain}
 
     def register(self, entry):
         """Validate, hash, chain, and persist a new entry.

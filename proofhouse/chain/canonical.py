@@ -2,26 +2,33 @@
 """
 Canonical serialization for proofhouse records.
 
-Phase 0 Build Plan §3:
+Phase 0 Build Plan §3 (AMENDED per failure catalog #27):
     "Everything downstream depends on byte-identical serialization. Rules:
      1. JSON, sort_keys=True, separators=(',', ':'), ensure_ascii=False, UTF-8.
-     2. hash and prev are excluded from the hashed payload (a record cannot
-        hash a field containing its own hash).
+     2. Only 'hash' is excluded from the hashed payload (a record cannot
+        hash a field containing its own hash). 'prev' IS included — it is
+        known before the hash is computed, and excluding it would allow
+        insertion and deletion without detection.
      3. Floats are forbidden in hashed records. Numeric thresholds are stored
         as decimal strings ('0.05', not 0.05). Rationale: float repr varies
         across platforms and languages, and an independent reimplementation of
         the verifier must produce identical bytes. This also removes an entire
         class of 0.0495 ≈ 0.05 ambiguity at the storage layer.
      4. Timestamps are RFC3339 UTC with Z, second precision.
-     5. null is omitted, not serialized. Absent and null are the same thing."
+     5. null is omitted, not serialized. Absent and null are the same thing.
+        Exception: nulls inside lists are preserved — list position is
+        semantically meaningful and removing an element changes the list."
 """
 
 import json
 
 
-# Fields excluded from canonical bytes — they cannot be part of the payload
-# they are computed from.
-_EXCLUDED_FIELDS = frozenset({"hash", "prev"})
+# Only 'hash' is excluded — it cannot be part of the payload it is computed
+# from. 'prev' IS included: it is set before the hash is computed, and
+# including it makes the hash commit to the record's position in the chain.
+# Failure catalog #27: excluding prev gave content integrity without history
+# integrity — insertion and deletion passed verification.
+_EXCLUDED_FIELDS = frozenset({"hash"})
 
 
 def canonical_bytes(record):
@@ -31,8 +38,8 @@ def canonical_bytes(record):
     - Keys sorted recursively
     - Compact separators (',', ':')
     - ensure_ascii=False, encoded as UTF-8
-    - 'hash' and 'prev' fields stripped
-    - null/None values stripped recursively
+    - 'hash' field stripped (only — prev is included)
+    - null/None values stripped recursively (except inside lists)
     - Floats forbidden (raises TypeError)
 
     Returns bytes.

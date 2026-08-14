@@ -18,16 +18,25 @@ Segment hierarchy (from least to most restricted):
     S1 (Screen A) — reusable within a cycle
     S2 (Screen B) — reusable within a cycle
     R (Reserve) — untouched, promoted to V on demand
-    V (Validation) — one block per hypothesis, tokened, single-use
+    V (Validation) — one block per hypothesis, tokened, single-use (TERMINAL)
     L (Live) — forward-collected, licenses deployment, never gates
 """
 
 import copy
+import os
+
+import yaml
 
 
 # Segment promotion order: higher index = more restricted.
 # A block may be promoted up this ladder but never demoted.
+# V is terminal: spent blocks don't become live data.
 _SEGMENT_ORDER = {"E": 0, "S1": 1, "S2": 2, "R": 3, "V": 4, "L": 5}
+
+# V is terminal — once a block is spent for validation, it cannot be
+# promoted to L. V→L would imply that validation data is also used for
+# live deployment, which violates the separation.
+_TERMINAL_SEGMENTS = frozenset({"V"})
 
 # Segments where consumption is single-use (one entry per block)
 _SINGLE_USE_SEGMENTS = frozenset({"V"})
@@ -37,15 +46,54 @@ _SEAM_CHECK_SEGMENTS = frozenset({"V"})
 
 
 class BlockRegistry:
-    """In-memory block registry with consumption tracking.
+    """Block registry with consumption tracking and optional disk persistence.
 
     Blocks are stored by ID. Consumption appends to a block's consumed_by
     list. V-blocks enforce single-use: once consumed by one entry, they
     refuse consumption by another.
+
+    When initialized with a path, all mutations are automatically persisted.
     """
 
-    def __init__(self):
+    def __init__(self, path=None):
+        """Initialize the block registry.
+
+        Args:
+            path: Optional path to the block registry YAML file.
+                  If set, the registry auto-saves after every mutation
+                  and loads from disk on init if the file exists.
+        """
         self._blocks = {}  # id -> block dict
+        self._path = path
+
+        if path and os.path.exists(path):
+            self._load()
+
+    def _load(self):
+        """Load blocks from disk."""
+        with open(self._path) as f:
+            data = yaml.safe_load(f)
+        if data and isinstance(data, dict):
+            blocks = data.get("blocks", [])
+            for block in blocks:
+                if isinstance(block, dict) and "id" in block:
+                    block.setdefault("consumed_by", [])
+                    self._blocks[block["id"]] = block
+
+    def _save(self):
+        """Save blocks to disk if a path is configured."""
+        if not self._path:
+            return
+        parent = os.path.dirname(self._path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        data = {
+            "schema_version": 1,
+            "blocks": list(self._blocks.values()),
+        }
+        with open(self._path, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=True,
+                      allow_unicode=True)
 
     def add_block(self, block):
         """Add a block to the registry.
@@ -72,6 +120,7 @@ class BlockRegistry:
         stored = copy.deepcopy(block)
         stored.setdefault("consumed_by", [])
         self._blocks[block_id] = stored
+        self._save()
 
     def get_block(self, block_id):
         """Get a block by ID. Returns a copy.
@@ -155,6 +204,7 @@ class BlockRegistry:
             consumption_record["seam_acknowledged"] = True
 
         block.setdefault("consumed_by", []).append(consumption_record)
+        self._save()
 
     def complete_block(self, block_id, completed_at):
         """Record the data-completion event for a block.
@@ -181,12 +231,14 @@ class BlockRegistry:
 
         block["data_complete"] = True
         block["completed_at"] = completed_at
+        self._save()
 
     def promote_block(self, block_id, new_segment):
         """Promote a block to a higher segment.
 
         Blocks may be promoted up the segment ladder (e.g., R→V) but
         never demoted (V→R is refused — blocks do not un-spend).
+        V is terminal: a spent validation block cannot be promoted to L.
 
         Args:
             block_id: The block ID.
@@ -194,7 +246,8 @@ class BlockRegistry:
 
         Raises:
             KeyError: If block not found.
-            ValueError: If new_segment is invalid or is a demotion.
+            ValueError: If new_segment is invalid, is a demotion, or
+                        current segment is terminal.
         """
         if block_id not in self._blocks:
             raise KeyError("Block not found: {}".format(block_id))
@@ -208,6 +261,14 @@ class BlockRegistry:
 
         block = self._blocks[block_id]
         current = block["segment"]
+
+        # V is terminal — spent blocks don't become live data
+        if current in _TERMINAL_SEGMENTS and new_segment != current:
+            raise ValueError(
+                "Block {} has terminal segment {} and cannot be promoted "
+                "further.".format(block_id, current)
+            )
+
         if _SEGMENT_ORDER[new_segment] < _SEGMENT_ORDER[current]:
             raise ValueError(
                 "Block {} cannot demote from {} to {} — "
@@ -215,3 +276,4 @@ class BlockRegistry:
             )
 
         block["segment"] = new_segment
+        self._save()

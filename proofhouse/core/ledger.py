@@ -8,7 +8,11 @@ Phase 0 Build Plan §4.3 and governance sub-rules 7a–7h:
     statistic increments the ledger. Counters are per-universe (7b);
     universes sharing any instrument share the count.
 
-    "kind: explore | eval | gate | maintenance"
+    Each row carries a content hash and prev pointer, forming a hash chain.
+    This is the highest-value tampering target in the system — deleting
+    rows lowers the trial count, which loosens every threshold downstream.
+
+    "kind: explore | eval | gate | maintenance | overlap_declaration"
     "7e: Dedup by code hash + data hash + universe. Changed parameter = new trial."
     "7f: Row written at scoring time, not completion."
     "7g: kind: maintenance rows: logged, excluded from multiplicity."
@@ -18,23 +22,31 @@ import json
 import os
 from datetime import datetime, timezone
 
+from proofhouse.chain.canonical import canonical_bytes
+from proofhouse.chain.hashing import content_hash
 
-# Valid row kinds
+
+# Valid row kinds (overlap_declaration is a system kind, not user-facing)
 _VALID_KINDS = frozenset({"explore", "eval", "gate", "maintenance"})
+_SYSTEM_KINDS = frozenset({"overlap_declaration"})
+_ALL_KINDS = _VALID_KINDS | _SYSTEM_KINDS
 
 # Kinds excluded from the multiplicity count
-_EXCLUDED_KINDS = frozenset({"maintenance"})
+_EXCLUDED_KINDS = frozenset({"maintenance", "overlap_declaration"})
 
 
 class Ledger:
     """Append-only multiple-testing ledger with per-universe trial counting.
 
-    The ledger is a JSONL file on disk. Each row records one evaluation.
+    The ledger is a JSONL file on disk. Each row records one evaluation,
+    is content-hashed, and chained via prev pointers.
+
     Trial counts are per-universe, with deduplication by
     (code_hash, data_hash, universe) and maintenance rows excluded.
 
     Universes can be declared as overlapping (sharing instruments),
-    in which case they share a combined trial count.
+    in which case they share a combined trial count. Overlap declarations
+    are persisted as special rows in the JSONL.
     """
 
     def __init__(self, path):
@@ -45,12 +57,12 @@ class Ledger:
         """
         self._path = path
         self._rows = []
-        # Dedup index: (code_hash, data_hash, universe) → True
-        self._seen = set()
         # Overlap groups: universe_id → group_id
         self._overlap_groups = {}
         # Counter: next run_id number
         self._next_run = 1
+        # Last hash in the chain (for prev pointer)
+        self._last_hash = None
 
         # Load existing rows
         if os.path.exists(path):
@@ -61,9 +73,15 @@ class Ledger:
                         continue
                     row = json.loads(line)
                     self._rows.append(row)
-                    key = (row.get("code_hash"), row.get("data_hash"), row.get("universe"))
-                    self._seen.add(key)
+                    self._last_hash = row.get("hash")
                     self._next_run += 1
+
+                    # Replay overlap declarations
+                    if row.get("kind") == "overlap_declaration":
+                        a = row.get("universe_a")
+                        b = row.get("universe_b")
+                        if a and b:
+                            self._apply_overlap(a, b)
 
     def declare_overlap(self, universe_a, universe_b):
         """Declare that two universes share instruments.
@@ -71,9 +89,26 @@ class Ledger:
         After this call, count_trials for either universe returns the
         combined count across both.
 
+        The declaration is persisted as a special row in the ledger JSONL,
+        so it survives across sessions.
+
         Uses union-find internally to support transitive overlap
         (if A overlaps B and B overlaps C, all three share a count).
         """
+        self._apply_overlap(universe_a, universe_b)
+
+        # Persist the declaration as a chained ledger row
+        row = {
+            "run_id": "OVL-{:06d}".format(self._next_run),
+            "ts_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "kind": "overlap_declaration",
+            "universe_a": universe_a,
+            "universe_b": universe_b,
+        }
+        self._write_and_chain(row)
+
+    def _apply_overlap(self, universe_a, universe_b):
+        """Apply overlap in memory (union-find merge)."""
         group_a = self._find_group(universe_a)
         group_b = self._find_group(universe_b)
 
@@ -94,6 +129,7 @@ class Ledger:
                    registry_ref=None, outcome=None):
         """Append a row to the ledger. Written to disk immediately (7f).
 
+        Each row is content-hashed and chained via prev pointers.
         The row is always written to the JSONL file. Deduplication
         affects counting, not logging — a duplicate row is logged but
         not counted as a new trial.
@@ -134,16 +170,76 @@ class Ledger:
             "outcome": outcome,
         }
 
-        self._rows.append(row)
-        key = (code_hash, data_hash, universe)
-        self._seen.add(key)
+        self._write_and_chain(row)
 
-        # Write to disk immediately (7f: at scoring time, not completion)
+    def _write_and_chain(self, row):
+        """Hash, chain, persist, and track a row."""
+        # Set prev pointer
+        if self._last_hash is not None:
+            row["prev"] = self._last_hash
+
+        # Compute content hash (prev is included, hash is excluded)
+        row["hash"] = content_hash(row)
+        self._last_hash = row["hash"]
+
+        self._rows.append(row)
+
+        # Write to disk immediately using canonical JSON
         parent_dir = os.path.dirname(self._path)
         if parent_dir:
             os.makedirs(parent_dir, exist_ok=True)
         with open(self._path, "a") as f:
-            f.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
+            # Use canonical serialization for consistency
+            raw = canonical_bytes(row)
+            f.write(raw.decode("utf-8") + "\n")
+
+    def verify(self):
+        """Verify the hash chain integrity of all ledger rows.
+
+        Returns:
+            Tuple of (ok: bool, errors: list of dicts).
+            Each error dict has 'index', 'kind', and 'message'.
+        """
+        errors = []
+
+        for i, row in enumerate(self._rows):
+            # Check 1: hash integrity
+            expected_hash = content_hash(row)
+            stored_hash = row.get("hash")
+            if stored_hash != expected_hash:
+                errors.append({
+                    "index": i,
+                    "kind": "hash_mismatch",
+                    "message": (
+                        "Row {}: stored hash {} does not match "
+                        "recomputed hash {}".format(i, stored_hash, expected_hash)
+                    ),
+                })
+
+            # Check 2: prev pointer
+            if i == 0:
+                if "prev" in row:
+                    errors.append({
+                        "index": i,
+                        "kind": "unexpected_prev",
+                        "message": "Genesis row (index 0) must not have a prev field",
+                    })
+            else:
+                stored_prev = row.get("prev")
+                preceding_hash = self._rows[i - 1].get("hash")
+                if stored_prev != preceding_hash:
+                    errors.append({
+                        "index": i,
+                        "kind": "prev_mismatch",
+                        "message": (
+                            "Row {}: prev {} does not match "
+                            "preceding row's hash {}".format(
+                                i, stored_prev, preceding_hash
+                            )
+                        ),
+                    })
+
+        return (len(errors) == 0, errors)
 
     def count_trials(self, universe):
         """Count unique, non-maintenance trials for a universe.
@@ -176,7 +272,7 @@ class Ledger:
             if row_universe not in related:
                 continue
 
-            # 7g: maintenance excluded
+            # 7g: maintenance and system kinds excluded
             if row.get("kind") in _EXCLUDED_KINDS:
                 continue
 

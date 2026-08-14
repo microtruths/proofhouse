@@ -170,11 +170,18 @@ class TestBlocks:
         assert block["segment"] == "V"
 
     def test_b4_demote_v_to_r_refused(self):
-        """B-4: V→R is refused (blocks do not un-spend)."""
+        """B-4: V→R is refused (V is terminal — blocks do not un-spend)."""
         reg = self._make_registry()
 
-        with pytest.raises(ValueError, match="cannot demote"):
+        with pytest.raises(ValueError, match="terminal segment"):
             reg.promote_block("B-2025-02", "R")
+
+    def test_b4_promote_v_to_l_refused(self):
+        """V→L is refused. V is terminal — spent blocks don't become live data."""
+        reg = self._make_registry()
+
+        with pytest.raises(ValueError, match="terminal segment"):
+            reg.promote_block("B-2025-02", "L")
 
     def test_consume_e_block_allowed(self):
         """E-blocks can be consumed freely (unlimited reuse)."""
