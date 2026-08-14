@@ -1,0 +1,102 @@
+# Tasteprint Experiment — Non-crypto retro-filed fixture
+#
+# Domain-agnosticism test: if this costs schema hacks, the schema is wrong.
+# This is a survey-based taste profiling experiment, not a financial hypothesis.
+
+schema_version: 1
+id: H-2026-TP01
+created_utc: "2026-08-14T00:00:00Z"
+status: registered
+depends_on: []
+
+mechanism:
+  class: survey-experiment
+  counterparty: >-
+    The null hypothesis: that survey-derived taste profiles have no
+    predictive power for book recommendations beyond popularity-based
+    baselines.
+  claim: >-
+    A structured taste survey capturing preferences across dimensions
+    (complexity, emotional tone, pacing, theme affinity) produces
+    profiles that predict held-out book ratings better than a
+    popularity-only baseline.
+  expected_effect_size: "0.3"
+  expected_decay: >-
+    Taste profiles may drift over months. The survey captures a
+    snapshot; re-survey at 6-month intervals is planned.
+
+signal:
+  inputs: [survey_responses, book_ratings]
+  transform: >-
+    Map survey responses to a taste vector via the Tasteprint scoring
+    rubric. Compute cosine similarity between taste vector and book
+    feature vectors. Rank recommendations by similarity score.
+  frequency: per-user (one-time survey, ongoing recommendations)
+  parameters:
+    dimensions: 8
+    similarity_metric: "cosine"
+    min_responses: 10
+
+universe:
+  id: tasteprint-pilot
+  venues: [web-survey]
+  instruments: >-
+    Pilot participants recruited via the recruit survey. Minimum 10
+    completed survey responses per participant.
+
+feasibility:
+  min_order_notional_usd: "0"
+  sleeve_range: ["0", "0"]
+  instruments_held: 1
+  rebalance_band: "0"
+
+costs:
+  model_ref: costs/none
+
+gate:
+  statistic: ndcg
+  combination: "g1"
+  criteria:
+    g1:
+      comparator: ">"
+      threshold:
+        literal: "0"
+  benchmark: popularity-baseline
+  benchmark_justification: >-
+    Popularity-only recommendations are the natural baseline for any
+    personalization system. If the taste profile does not beat
+    recommending the most-rated books, it adds no value.
+  benchmark_sensitivity:
+    - random-baseline
+    - genre-only-baseline
+  on_pass: deploy-recommendations
+  on_fail: >-
+    Revise the survey instrument or scoring rubric. Do not deploy
+    personalized recommendations.
+
+pass_licenses: >-
+  Deploy personalized recommendations to pilot participants.
+pass_does_not_establish: >-
+  General recommendation quality or long-term taste stability.
+
+live_gate:
+  min_duration_weeks: 4
+
+validation_blocks: []
+seam_acknowledged: false
+
+diagnostics:
+  - name: response_quality
+    trigger: ">0.3 incomplete surveys → investigate survey UX"
+  - name: genre_concentration
+    trigger: ">0.8 single-genre → taste vector may be degenerate"
+
+power_check:
+  inputs:
+    effect_size: "0.3"
+    participants: 30
+  value:
+    pending: true
+    fill_rule: "power(effect_size, participants)"
+
+prior_art: []

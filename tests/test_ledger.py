@@ -1,0 +1,174 @@
+# tests/test_ledger.py — Hand-computed tests for the ledger
+"""
+Phase 0 Build Plan §6 — Ledger tests.
+
+Tests L-1 through L-5. Written before implementation.
+Spec from §4.3 and governance sub-rules 7a–7h:
+    "kind: explore | eval | gate | maintenance"
+    "7b: Per-universe counters, with declared overlap policy."
+    "7e: Dedup by code hash + data hash + universe."
+    "7f: Row written at scoring time, not completion."
+    "7g: kind: maintenance rows: logged, excluded from multiplicity."
+"""
+
+import os
+import tempfile
+
+import pytest
+
+from proofhouse.core.ledger import Ledger
+
+
+class TestLedger:
+    """L-1 through L-5: ledger counting and behavior."""
+
+    def _make_ledger(self, tmpdir=None):
+        """Create a ledger in a temp directory."""
+        if tmpdir is None:
+            tmpdir = tempfile.mkdtemp()
+        path = os.path.join(tmpdir, "ledger.jsonl")
+        return Ledger(path)
+
+    def test_l1_dedup(self):
+        """L-1 (dedup, rule 7e): identical code_hash + data_hash + universe → counted once.
+
+        Rows: (cA, dA, uX), (cB, dB, uX), (cA, dA, uX).
+        count_trials("uX") == 2, not 3.
+        """
+        ledger = self._make_ledger()
+
+        ledger.append_row(code_hash="cA", data_hash="dA", universe="uX",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+        ledger.append_row(code_hash="cB", data_hash="dB", universe="uX",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+        ledger.append_row(code_hash="cA", data_hash="dA", universe="uX",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+
+        assert ledger.count_trials("uX") == 2
+
+    def test_l2_maintenance_excluded(self):
+        """L-2 (maintenance, 7g): maintenance rows excluded from count.
+
+        Four rows, one kind: maintenance → count_trials == 3.
+        """
+        ledger = self._make_ledger()
+
+        ledger.append_row(code_hash="c1", data_hash="d1", universe="u1",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+        ledger.append_row(code_hash="c2", data_hash="d2", universe="u1",
+                          kind="eval", blocks_touched=[], stats_scored=[])
+        ledger.append_row(code_hash="c3", data_hash="d3", universe="u1",
+                          kind="maintenance", blocks_touched=[], stats_scored=[])
+        ledger.append_row(code_hash="c4", data_hash="d4", universe="u1",
+                          kind="gate", blocks_touched=[], stats_scored=[])
+
+        assert ledger.count_trials("u1") == 3
+
+    def test_l3_per_universe(self):
+        """L-3 (per-universe, 7b): independent counts per universe.
+
+        2 rows on uA, 3 on uB → count("uA") == 2, count("uB") == 3.
+        """
+        ledger = self._make_ledger()
+
+        # 2 on uA
+        ledger.append_row(code_hash="c1", data_hash="d1", universe="uA",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+        ledger.append_row(code_hash="c2", data_hash="d2", universe="uA",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+
+        # 3 on uB
+        ledger.append_row(code_hash="c3", data_hash="d3", universe="uB",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+        ledger.append_row(code_hash="c4", data_hash="d4", universe="uB",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+        ledger.append_row(code_hash="c5", data_hash="d5", universe="uB",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+
+        assert ledger.count_trials("uA") == 2
+        assert ledger.count_trials("uB") == 3
+
+    def test_l4_overlap_policy(self):
+        """L-4 (overlap policy, 7b): overlapping universes share count.
+
+        uA and uB share an instrument. Rows on either universe should
+        be counted when querying the shared universe.
+
+        Implementation: declare_overlap("uA", "uB") → they share a count.
+        """
+        ledger = self._make_ledger()
+        ledger.declare_overlap("uA", "uB")
+
+        # 3 on uA
+        ledger.append_row(code_hash="c1", data_hash="d1", universe="uA",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+        ledger.append_row(code_hash="c2", data_hash="d2", universe="uA",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+        ledger.append_row(code_hash="c3", data_hash="d3", universe="uA",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+
+        # 2 on uB
+        ledger.append_row(code_hash="c4", data_hash="d4", universe="uB",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+        ledger.append_row(code_hash="c5", data_hash="d5", universe="uB",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+
+        # Both should report 5 total (shared count)
+        assert ledger.count_trials("uA") == 5
+        assert ledger.count_trials("uB") == 5
+
+    def test_l5_write_timing(self):
+        """L-5 (write timing, 7f): a run that raises after scoring still
+        leaves its ledger row.
+
+        The ledger row is written at scoring time (append_row), not at
+        run completion. If subsequent processing raises, the row persists.
+        """
+        tmpdir = tempfile.mkdtemp()
+        ledger = self._make_ledger(tmpdir)
+
+        # Write a row
+        ledger.append_row(code_hash="c1", data_hash="d1", universe="u1",
+                          kind="explore", blocks_touched=[], stats_scored=["alpha"])
+
+        # Simulate: subsequent processing raises
+        # (The ledger row should already be persisted to disk)
+
+        # Reload from disk — the row must survive
+        ledger2 = Ledger(os.path.join(tmpdir, "ledger.jsonl"))
+        assert ledger2.count_trials("u1") == 1
+
+    def test_dedup_different_universe_not_deduped(self):
+        """Same code+data on different universes → counted independently."""
+        ledger = self._make_ledger()
+
+        ledger.append_row(code_hash="c1", data_hash="d1", universe="uA",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+        ledger.append_row(code_hash="c1", data_hash="d1", universe="uB",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+
+        assert ledger.count_trials("uA") == 1
+        assert ledger.count_trials("uB") == 1
+
+    def test_dedup_row_still_logged(self):
+        """Dedup prevents counting but the row is still written to the file."""
+        tmpdir = tempfile.mkdtemp()
+        ledger = self._make_ledger(tmpdir)
+
+        ledger.append_row(code_hash="c1", data_hash="d1", universe="uX",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+        ledger.append_row(code_hash="c1", data_hash="d1", universe="uX",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+
+        # Count excludes duplicates
+        assert ledger.count_trials("uX") == 1
+
+        # But both rows exist in the file
+        with open(os.path.join(tmpdir, "ledger.jsonl")) as f:
+            lines = [l.strip() for l in f if l.strip()]
+        assert len(lines) == 2
+
+    def test_empty_universe_count(self):
+        """Counting trials for an unseen universe returns 0."""
+        ledger = self._make_ledger()
+        assert ledger.count_trials("never-seen") == 0

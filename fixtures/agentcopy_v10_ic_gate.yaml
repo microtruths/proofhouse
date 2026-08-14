@@ -1,0 +1,119 @@
+# AgentCopy v10 Phase 0.5 IC Gate — Retro-filed fixture
+#
+# Deliberately a FAILED gate (IC = 0.0389 vs >= 0.05).
+# The harder and more informative case.
+#
+# NOTE: The behavioral-composite hypothesis cannot cleanly name a counterparty
+# under V-1 — see Phase 0 build plan §8.1. "a bad-wallet detector, not a
+# good-wallet selector" (max z-score 0.20). This is the schema working,
+# not a schema failure. Recorded as the first real finding.
+#
+# The counterparty below is the best available framing, acknowledging §8.1.
+
+schema_version: 1
+id: H-2026-AC10
+created_utc: "2026-07-22T00:00:00Z"
+status: registered
+depends_on: []
+
+mechanism:
+  class: selection-rule
+  # NOTE (§8.1 finding): The original counterparty used "underperform" which
+  # triggered V-1's benchmark-language filter. This is the schema working —
+  # the behavioral-composite hypothesis identifies a *selection rule*, not
+  # someone losing money. This reformulation is the best available framing
+  # but acknowledges the weakness: the counterparty is the wallets themselves
+  # (whose losses fund the spread), not a market participant being exploited.
+  counterparty: >-
+    Wallets with poor behavioral metrics (high disposition effect, low
+    payoff ratios) that consistently lose money on their trades. Their
+    realized losses create the spread between selected and unselected
+    cohorts that the copy-trader captures.
+  claim: >-
+    A composite behavioral score (IC, hit rate, payoff ratio, disposition
+    ratio) applied to wallet-level fills data selects cohorts whose
+    forward copy-trade returns exceed those of unselected wallets.
+  expected_effect_size: "0.5"
+  expected_decay: >-
+    Unknown. The mechanism relies on persistent behavioral traits. If
+    traits are transient, the composite decays within one cohort window
+    (2 months).
+
+signal:
+  inputs: [wallet_fills, behavioral_composite_score]
+  transform: >-
+    Rank wallets by composite score (equal-weighted z-scores of IC,
+    hit rate, payoff ratio, disposition ratio). Select top-k wallets
+    per cohort window.
+  frequency: per-cohort (2-month windows)
+  parameters:
+    k: 25
+    composite_weights: "equal"
+
+universe:
+  id: hl-perps-wallets
+  venues: [hyperliquid]
+  instruments: >-
+    All wallets with >= 100 episodes in the training window, across
+    all perpetual instruments.
+
+feasibility:
+  min_order_notional_usd: "10"
+  sleeve_range: ["2000", "20000"]
+  instruments_held: 8
+  rebalance_band: "0.15"
+
+costs:
+  model_ref: costs/hl-taker-v1
+
+gate:
+  statistic: ic
+  combination: "g1"
+  criteria:
+    g1:
+      comparator: ">="
+      threshold:
+        literal: "0.05"
+  benchmark: btc-subtraction
+  benchmark_justification: >-
+    BTC subtraction is the standard benchmark for Hyperliquid strategies.
+    The AgentCopy alpha decay report showed BTC subtraction gave +577 bps
+    while an OI-weighted index gave -599 bps — the sign flips across
+    benchmarks, which is itself a finding.
+  benchmark_sensitivity:
+    - market-index
+    - eth-subtraction
+  on_pass: promote-to-shadow-trial
+  on_fail: >-
+    Record failure. Register revised hypotheses for future data only
+    (temporal embargo). Do not retest on same data.
+
+pass_licenses: >-
+  A shadow trial on the live sleeve for 6 weeks with real fills.
+pass_does_not_establish: >-
+  Deployable alpha or general wallet-selection edge.
+
+live_gate:
+  min_duration_weeks: 6
+
+validation_blocks: []
+seam_acknowledged: false
+
+diagnostics:
+  - name: no_loss_wallet_concentration
+    trigger: ">0.3 → written caveat"
+  - name: mark_dependence
+    trigger: ">0.5 → written caveat"
+  - name: hundred_pct_win_rate
+    trigger: ">0.1 → written caveat"
+
+power_check:
+  inputs:
+    effect_size: "0.5"
+    blocks: 3
+    prior_trials: 14
+  value:
+    pending: true
+    fill_rule: "power(effect_size, blocks, prior_trials)"
+
+prior_art: []
