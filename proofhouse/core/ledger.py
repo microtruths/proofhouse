@@ -104,6 +104,7 @@ class Ledger:
             "universe_a": universe_a,
             "universe_b": universe_b,
         }
+        self._next_run += 1
         self._write_and_chain(row)
 
     def _apply_overlap(self, universe_a, universe_b):

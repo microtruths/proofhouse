@@ -314,3 +314,21 @@ class TestLedger:
         assert rows[0].get("hash") is not None, "hash must survive reload"
         assert "prev" not in rows[0], "genesis has no prev"
         assert rows[1].get("prev") == rows[0].get("hash")
+
+    def test_overlap_and_append_run_ids_unique(self):
+        """OVL and R run_ids must not collide.
+
+        declare_overlap must increment _next_run so that a subsequent
+        append_row doesn't reuse the same number.
+        """
+        ledger = self._make_ledger()
+
+        ledger.declare_overlap("uA", "uB")
+        ledger.append_row(code_hash="c1", data_hash="d1", universe="uA",
+                          kind="explore", blocks_touched=[], stats_scored=[])
+
+        rows = ledger.all_rows()
+        run_ids = [r["run_id"] for r in rows]
+        assert len(run_ids) == len(set(run_ids)), (
+            "run_ids must be unique, got: {}".format(run_ids)
+        )

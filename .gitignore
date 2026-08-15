@@ -33,8 +33,8 @@ htmlcov/
 # Plans (not part of the software)
 docs/plans/
 
-# proofhouse runtime data (local instances)
-registry/
-ledger/
-manifests/
-blocks/
+# proofhouse runtime data (THIS repo's test instance only)
+# Anchored to /.proofhouse/ so a real research instance at any other
+# path is NOT ignored. A real instance MUST commit its registry, ledger,
+# and blocks — git provides transport and redundancy (parent plan §1).
+/.proofhouse/
