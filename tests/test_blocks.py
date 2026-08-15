@@ -2,7 +2,7 @@
 """
 Phase 0 Build Plan §6 — Block tests.
 
-Tests B-1 through B-4. Written before implementation.
+Tests B-1 through B-4 plus persistence. Written before implementation.
 Spec from §4.1:
     "data_complete is flipped by an explicit completion event, never inferred
      from end being in the past."
@@ -17,7 +17,7 @@ from proofhouse.core.blocks import BlockRegistry
 
 
 class TestBlocks:
-    """B-1 through B-4: block registry and consumption."""
+    """B-1 through B-4: block registry, consumption, and persistence."""
 
     def _make_registry(self):
         """Create a block registry with test blocks."""

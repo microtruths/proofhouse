@@ -63,6 +63,8 @@ def validate_entry(entry, block_registry=None, existing_entries=None):
     """
     errors = []
 
+    # --- Schema validators (V1–V12) ---
+
     # V-11: schema_version must be present and valid
     sv = entry.get("schema_version")
     if sv is None:
@@ -107,7 +109,6 @@ def validate_entry(entry, block_registry=None, existing_entries=None):
                     "numeric decimal strings. Got: {!r}".format(sleeve_range)
                 )
 
-    # --- Schema validators (V1–V12) ---
 
     # V-1: Counterparty rejects benchmark terms
     counterparty = _nested_get(entry, "mechanism", "counterparty")

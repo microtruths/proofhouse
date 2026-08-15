@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 import yaml
 
-from proofhouse.chain.chain import build_chain, verify_chain
+from proofhouse.chain.chain import verify_chain
 from proofhouse.chain.hashing import content_hash
 from proofhouse.schema.validate import validate_entry, ValidationError
 from proofhouse.schema.versions import SCHEMA_VERSION

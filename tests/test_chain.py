@@ -2,7 +2,7 @@
 """
 Phase 0 Build Plan §6 — Chain tests.
 
-Tests H-1 through H-4. Values computed by hand BEFORE implementation.
+Tests H-1 through H-6. Values computed by hand BEFORE implementation.
 Spec:
     "Three records; rec2.prev == rec1.hash and rec3.prev == rec2.hash."
     "Genesis record has prev absent."
@@ -15,7 +15,7 @@ from proofhouse.chain.hashing import content_hash
 
 
 class TestChain:
-    """H-1 through H-4: hash chain construction and verification."""
+    """H-1 through H-6: hash chain construction, verification, and attack detection."""
 
     def _make_records(self):
         """Build three simple records for chaining."""

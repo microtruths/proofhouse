@@ -105,7 +105,7 @@ def _make_block_registry():
 
 
 class TestValidation:
-    """V-1 through V-10: schema validators and behavioral checks."""
+    """V-1 through V-12: schema validators and behavioral checks."""
 
     def test_valid_entry_passes(self):
         """A well-formed entry passes all checks."""

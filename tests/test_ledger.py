@@ -2,7 +2,7 @@
 """
 Phase 0 Build Plan §6 — Ledger tests.
 
-Tests L-1 through L-5. Written before implementation.
+Tests L-1 through L-9 plus overlap and run_id uniqueness.
 Spec from §4.3 and governance sub-rules 7a–7h:
     "kind: explore | eval | gate | maintenance"
     "7b: Per-universe counters, with declared overlap policy."
@@ -20,7 +20,7 @@ from proofhouse.core.ledger import Ledger
 
 
 class TestLedger:
-    """L-1 through L-5: ledger counting and behavior."""
+    """L-1 through L-9: ledger counting, chaining, and persistence."""
 
     def _make_ledger(self, tmpdir=None):
         """Create a ledger in a temp directory."""
