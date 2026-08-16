@@ -312,8 +312,8 @@ class Ledger:
         and excluding it understates multiplicity, producing false positives.
 
         Stage-1 rows (stage=1) are EXCLUDED from the stage-2 correction.
-        This exclusion is valid because segment B was only touched by
-        stage-1 survivors.
+        This exclusion is valid because S1/S2 blocks were only touched
+        by stage-1 survivors.
 
         Phase 1 plan: this is a deliberate design choice, not an accident.
         The alternative (refuse to run stage-2 until all legacy rows are

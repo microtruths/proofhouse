@@ -131,6 +131,64 @@ class TestStageAwareCounting:
             # Stage-2 count should include it
             assert ledger.count_trials_stage2("hl-perps") == 1
 
+    def test_stage2_count_respects_overlap(self):
+        """Overlapping universes share stage-2 counts too."""
+        from proofhouse.core.ledger import Ledger
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ledger = Ledger(os.path.join(tmpdir, "ledger.jsonl"))
+
+            ledger.declare_overlap("u-A", "u-B")
+
+            # Stage-1 row in u-A
+            ledger.append_row(
+                code_hash="sha256:s1", data_hash="sha256:d1",
+                universe="u-A", kind="explore",
+                blocks_touched=["e-block"],
+                stats_scored=["ic"],
+                stage=1, segment="E",
+            )
+
+            # Stage-2 row in u-B (overlaps with u-A)
+            ledger.append_row(
+                code_hash="sha256:s2", data_hash="sha256:d2",
+                universe="u-B", kind="gate",
+                blocks_touched=["v-block"],
+                stats_scored=["ic"],
+                stage=2, segment="V",
+            )
+
+            # Query u-A: total=2 (cross-universe overlap), stage-2=1
+            assert ledger.count_trials("u-A") == 2
+            assert ledger.count_trials_stage2("u-A") == 1
+
+    def test_stage_fields_survive_reload(self):
+        """Stage and segment fields are persisted and survive reload."""
+        from proofhouse.core.ledger import Ledger
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "ledger.jsonl")
+
+            ledger = Ledger(path)
+            ledger.append_row(
+                code_hash="sha256:code", data_hash="sha256:data",
+                universe="u", kind="explore",
+                blocks_touched=["e-block"],
+                stats_scored=["ic"],
+                stage=1, segment="E",
+            )
+
+            # Reload from disk
+            ledger2 = Ledger(path)
+            rows = ledger2.all_rows()
+            assert len(rows) == 1
+            assert rows[0].get("stage") == 1
+            assert rows[0].get("segment") == "E"
+
+            # Stage-2 count still correct after reload
+            assert ledger2.count_trials_stage2("u") == 0  # only stage-1 row
+
+
 
 class TestTransitiveContamination:
     """Amended descendants of contaminated entries inherit contamination."""
@@ -205,3 +263,107 @@ class TestWinnersCurse:
 
         result = check_effect_size_amendment(original, original)
         assert not result["amended"]
+
+
+class TestScreenStage1a:
+    """Stage 1a magnitude screen tests."""
+
+    def _make_result(self, value):
+        from proofhouse.eval.types import ScoredResult
+        return ScoredResult(statistic="ic", value=value, trial_count=1)
+
+    def test_returns_ranked_by_magnitude(self):
+        """Survivors are ranked by descending absolute magnitude."""
+        from proofhouse.core.screen import screen_stage1a
+
+        results = {
+            "weak": self._make_result(0.01),
+            "strong": self._make_result(0.10),
+            "medium": self._make_result(0.05),
+        }
+
+        survivors = screen_stage1a([], results)
+        assert survivors == ["strong", "medium", "weak"]
+
+    def test_zero_value_excluded(self):
+        """Entries with value=0 are excluded."""
+        from proofhouse.core.screen import screen_stage1a
+
+        results = {
+            "nonzero": self._make_result(0.05),
+            "zero": self._make_result(0.0),
+        }
+
+        survivors = screen_stage1a([], results)
+        assert "nonzero" in survivors
+        assert "zero" not in survivors
+
+    def test_empty_results(self):
+        """Empty scored_results returns empty survivors."""
+        from proofhouse.core.screen import screen_stage1a
+
+        survivors = screen_stage1a([], {})
+        assert survivors == []
+
+    def test_negative_values_ranked_by_absolute(self):
+        """Negative values are ranked by absolute magnitude."""
+        from proofhouse.core.screen import screen_stage1a
+
+        results = {
+            "neg_strong": self._make_result(-0.10),
+            "pos_weak": self._make_result(0.02),
+        }
+
+        survivors = screen_stage1a([], results)
+        assert survivors[0] == "neg_strong"
+
+
+class TestScreenStage1b:
+    """Stage 1b consistency screen tests."""
+
+    def _make_result(self, value):
+        from proofhouse.eval.types import ScoredResult
+        return ScoredResult(statistic="ic", value=value, trial_count=1)
+
+    def test_consistent_entry_survives(self):
+        """Entry with >50% sign consistency passes."""
+        from proofhouse.core.screen import screen_stage1b
+
+        results = {"entry1": self._make_result(0.05)}
+        # 4 of 5 sub-periods have same sign
+        sub_periods = {"entry1": [0.03, 0.02, 0.01, 0.04, -0.01]}
+
+        survivors = screen_stage1b(["entry1"], results, sub_periods)
+        assert "entry1" in survivors
+
+    def test_inconsistent_entry_filtered(self):
+        """Entry with <=50% sign consistency is filtered."""
+        from proofhouse.core.screen import screen_stage1b
+
+        results = {"entry1": self._make_result(0.05)}
+        # Only 1 of 4 sub-periods has positive sign
+        sub_periods = {"entry1": [0.01, -0.02, -0.03, -0.04]}
+
+        survivors = screen_stage1b(["entry1"], results, sub_periods)
+        assert "entry1" not in survivors
+
+    def test_missing_sub_period_data_filtered(self):
+        """Entry with no sub-period results is filtered."""
+        from proofhouse.core.screen import screen_stage1b
+
+        results = {"entry1": self._make_result(0.05)}
+        sub_periods = {}  # No sub-period data
+
+        survivors = screen_stage1b(["entry1"], results, sub_periods)
+        assert "entry1" not in survivors
+
+    def test_empty_sub_periods_filtered(self):
+        """Entry with empty sub-period list is filtered."""
+        from proofhouse.core.screen import screen_stage1b
+
+        results = {"entry1": self._make_result(0.05)}
+        sub_periods = {"entry1": []}
+
+        survivors = screen_stage1b(["entry1"], results, sub_periods)
+        assert "entry1" not in survivors
+

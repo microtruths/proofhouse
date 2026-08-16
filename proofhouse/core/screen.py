@@ -114,13 +114,23 @@ def screen_stage1a(entries, scored_results, fdr_q=0.3):
     Runs on E/S1 blocks only. Ranks hypotheses by magnitude.
     FDR correction at q≈0.3 (enrichment, not proof).
 
+    Current implementation: magnitude-rank only. The Benjamini-Hochberg
+    procedure requires p-values from the eval engine (via t-stats and SE),
+    which are not yet available in the ScoredResult interface. When they
+    are, this function will apply BH at the configured q-level.
+
+    For now, all entries with non-zero magnitude pass. This is the
+    permissive direction — it lets more through to stage 1b, where
+    the consistency screen does the actual filtering.
+
     Args:
         entries: List of entry dicts.
         scored_results: Dict of {entry_id: ScoredResult}.
-        fdr_q: FDR q-level for screening (default 0.3).
+        fdr_q: FDR q-level for screening (default 0.3). Currently stored
+               but not applied until p-values are available.
 
     Returns:
-        List of entry IDs that survive, ranked by magnitude.
+        List of entry IDs that survive, ranked by magnitude (descending).
     """
     # Rank by absolute value of the primary statistic
     ranked = sorted(
@@ -129,19 +139,13 @@ def screen_stage1a(entries, scored_results, fdr_q=0.3):
         reverse=True,
     )
 
-    # BH procedure for FDR control
-    n = len(ranked)
-    survivors = []
-
-    for rank, (entry_id, result) in enumerate(ranked, 1):
-        # BH threshold: (rank / n) * q
-        # For simplicity in Phase 1, we use a p-value proxy:
-        # entries with |value| above the FDR-adjusted threshold survive
-        bh_threshold = (rank / n) * fdr_q
-        # Use the metadata t_stat or SE if available for p-value
-        # For now: pass all with non-trivial magnitude
-        if abs(result.value) > 0:
-            survivors.append(entry_id)
+    # TODO: Apply BH procedure when ScoredResult carries p-values.
+    # BH threshold for rank i: (i / n) * fdr_q
+    # Reject H0 for all i ≤ max{i : p_i ≤ (i/n) * q}
+    survivors = [
+        entry_id for entry_id, result in ranked
+        if abs(result.value) > 0
+    ]
 
     return survivors
 

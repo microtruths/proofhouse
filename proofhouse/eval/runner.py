@@ -16,9 +16,7 @@ Parent plan §5.3:
     "A result without a manifest is not a result."
 """
 
-import hashlib
 import importlib.util
-import os
 import platform
 from datetime import datetime, timezone
 
@@ -31,6 +29,10 @@ def verify_artifact_pin(artifact_path, expected_hash):
     pin catches edits; gating execution on the pin makes running a second
     implementation impossible.
 
+    Delegates to proofhouse.core.artifact_pin.verify_pin — that module
+    is the canonical implementation. This function exists so callers can
+    import from runner without knowing about the pin module.
+
     Args:
         artifact_path: Path to the artifact file.
         expected_hash: Expected hash in 'sha256:<hex>' format.
@@ -39,27 +41,8 @@ def verify_artifact_pin(artifact_path, expected_hash):
         FileNotFoundError: If the artifact file does not exist.
         ValueError: If the hash does not match.
     """
-    if not os.path.exists(artifact_path):
-        raise FileNotFoundError(
-            "Artifact not found: {}".format(artifact_path)
-        )
-
-    with open(artifact_path, "rb") as f:
-        actual_digest = hashlib.sha256(f.read()).hexdigest()
-    actual_hash = "sha256:" + actual_digest
-
-    if actual_hash != expected_hash:
-        raise ValueError(
-            "Artifact hash mismatch — execution refused.\n"
-            "  Path:     {}\n"
-            "  Expected: {}\n"
-            "  Actual:   {}\n"
-            "This is a hard stop. The registered artifact has been modified "
-            "or a different file is being used. Re-register with the current "
-            "artifact hash if the change is intentional.".format(
-                artifact_path, expected_hash, actual_hash
-            )
-        )
+    from proofhouse.core.artifact_pin import verify_pin
+    verify_pin(artifact_path, expected_hash)
 
 
 def load_and_run_artifact(artifact_path, data, parameters):

@@ -9,8 +9,6 @@ This is the "smoke test that every piece connects" — not a unit test of
 individual functions, but a proof that the wiring is correct.
 """
 
-import hashlib
-import json
 import os
 import tempfile
 
