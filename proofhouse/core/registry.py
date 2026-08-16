@@ -148,6 +148,36 @@ class Registry:
             existing_entries=self._entries,
         )
 
+        # Winner's curse guard: if this entry amends an existing one
+        # (via depends_on), check whether expected_effect_size was changed.
+        # Updating it after seeing stage-1 results is an amendment
+        # requiring a new validation window.
+        depends_on = entry.get("depends_on", [])
+        if depends_on:
+            from proofhouse.core.screen import check_effect_size_amendment
+            for dep_id in depends_on:
+                if dep_id in self._entries:
+                    original = self._entries[dep_id]
+                    result = check_effect_size_amendment(entry, original)
+                    if result["amended"]:
+                        entry.setdefault("amendments", [])
+                        entry["amendments"].append({
+                            "field": "expected_effect_size",
+                            "original": result["original"],
+                            "current": result["current"],
+                            "parent_id": dep_id,
+                            "note": (
+                                "Effect size changed from {} to {} after "
+                                "registration of parent {}. This is a "
+                                "winner's-curse risk and must be justified."
+                                .format(
+                                    result["original"],
+                                    result["current"],
+                                    dep_id,
+                                )
+                            ),
+                        })
+
         # Hash and chain
         entry.pop("hash", None)
         entry.pop("prev", None)

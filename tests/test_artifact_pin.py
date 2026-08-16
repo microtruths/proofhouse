@@ -119,7 +119,7 @@ def run(data, parameters):
         With parameters passed as arguments, there are no embedded
         constants to drift. Polarity is in signal.parameters.
         """
-        from proofhouse.eval.runner import load_and_run_artifact
+        from proofhouse.eval.runner import _load_and_run_artifact as load_and_run_artifact
 
         code = '''
 def run(data, parameters):

@@ -1,9 +1,13 @@
-# tests/test_eval_runner.py — Tests for the eval runner
+# tests/test_eval_runner.py — Tests for eval runner mechanics
 """
-Phase 1 Build Plan §1a — Runner tests.
+Phase 1 Build Plan §1a — Runner mechanics tests.
 
-Tests the integration point: artifact pin verification, parameter passing,
-diagnostics isolation, manifest creation, and ledger row appending.
+Tests individual mechanics: artifact pin verification, parameter passing,
+diagnostics isolation, manifest creation. These test the building blocks
+that run_eval() assembles — importing from the canonical modules, not
+through the orchestrator.
+
+The orchestrator itself is tested in test_integration.py.
 """
 
 import hashlib
@@ -50,7 +54,7 @@ class TestArtifactPinVerification:
         This is the #26 wall: gating execution makes running a second
         implementation impossible.
         """
-        from proofhouse.eval.runner import verify_artifact_pin
+        from proofhouse.core.artifact_pin import verify_pin as verify_artifact_pin
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path, correct_hash = _make_artifact(tmpdir, _STRATEGY_CODE)
@@ -65,7 +69,7 @@ class TestArtifactPinVerification:
 
     def test_runner_accepts_correct_hash(self):
         """Runner accepts execution when hash matches pin."""
-        from proofhouse.eval.runner import verify_artifact_pin
+        from proofhouse.core.artifact_pin import verify_pin as verify_artifact_pin
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path, correct_hash = _make_artifact(tmpdir, _STRATEGY_CODE)
@@ -74,7 +78,7 @@ class TestArtifactPinVerification:
 
     def test_missing_artifact_rejected(self):
         """Runner rejects missing artifact path."""
-        from proofhouse.eval.runner import verify_artifact_pin
+        from proofhouse.core.artifact_pin import verify_pin as verify_artifact_pin
         import pytest
 
         with pytest.raises(FileNotFoundError):
@@ -132,7 +136,7 @@ class TestParameterPassing:
 
     def test_parameters_passed_to_artifact(self):
         """The runner passes signal.parameters to the artifact as arguments."""
-        from proofhouse.eval.runner import load_and_run_artifact
+        from proofhouse.eval.runner import _load_and_run_artifact as load_and_run_artifact
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path, _ = _make_artifact(tmpdir, _STRATEGY_CODE)
@@ -149,7 +153,7 @@ class TestParameterPassing:
 
     def test_default_polarity_is_positive(self):
         """Without explicit polarity, the strategy uses default."""
-        from proofhouse.eval.runner import load_and_run_artifact
+        from proofhouse.eval.runner import _load_and_run_artifact as load_and_run_artifact
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path, _ = _make_artifact(tmpdir, _STRATEGY_CODE)
@@ -166,7 +170,7 @@ class TestRunnerManifest:
 
     def test_manifest_contains_required_fields(self):
         """Manifest has all required fields from parent plan §5.3."""
-        from proofhouse.eval.runner import create_eval_manifest
+        from proofhouse.eval.runner import _create_eval_manifest as create_eval_manifest
 
         manifest = create_eval_manifest(
             run_id="R-000001",
