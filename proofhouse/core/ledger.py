@@ -126,7 +126,8 @@ class Ledger:
 
     def append_row(self, code_hash, data_hash, universe, kind,
                    blocks_touched, stats_scored,
-                   registry_ref=None, outcome=None):
+                   registry_ref=None, outcome=None,
+                   stage=None, segment=None):
         """Append a row to the ledger. Written to disk immediately (7f).
 
         Each row is content-hashed and chained via prev pointers.
@@ -143,6 +144,9 @@ class Ledger:
             stats_scored: List of statistic names computed.
             registry_ref: Optional entry ID this run is linked to.
             outcome: Optional outcome description.
+            stage: Optional stage label (1 or 2). Legacy rows without
+                   this field are handled explicitly in count methods.
+            segment: Optional segment label ('E', 'S1', 'S2', 'V', etc.).
 
         Raises:
             ValueError: If kind is invalid.
@@ -169,6 +173,14 @@ class Ledger:
             "stats_scored": stats_scored,
             "outcome": outcome,
         }
+
+        # Stage and segment are Phase 1 fields. Legacy rows (Phase 0)
+        # will not have them. Both fields are included only if set, so
+        # Phase 0 rows keep their hashes unchanged.
+        if stage is not None:
+            row["stage"] = stage
+        if segment is not None:
+            row["segment"] = segment
 
         self._write_and_chain(row)
 
@@ -286,6 +298,62 @@ class Ledger:
             if key in seen_keys:
                 continue
             seen_keys.add(key)
+
+            count += 1
+
+        return count
+
+    def count_trials_stage2(self, universe):
+        """Count trials for stage-2 multiplicity correction.
+
+        CONSERVATIVE default: legacy rows (without 'stage' field) count
+        toward stage-2 correction. This is the safe direction — a legacy
+        row might have touched a V-block (no 'segment' field says otherwise),
+        and excluding it understates multiplicity, producing false positives.
+
+        Stage-1 rows (stage=1) are EXCLUDED from the stage-2 correction.
+        This exclusion is valid because segment B was only touched by
+        stage-1 survivors.
+
+        Phase 1 plan: this is a deliberate design choice, not an accident.
+        The alternative (refuse to run stage-2 until all legacy rows are
+        classified) is stricter but the ledger has 0 rows at Phase 0 exit,
+        so it costs nothing to be conservative.
+
+        Args:
+            universe: Universe identifier.
+
+        Returns:
+            int: Trial count for stage-2 multiplicity correction.
+        """
+        target_group = self._find_group(universe)
+        related = set()
+        for uid in set(u for u in self._overlap_groups):
+            if self._find_group(uid) == target_group:
+                related.add(uid)
+        related.add(universe)
+
+        seen_keys = set()
+        count = 0
+
+        for row in self._rows:
+            row_universe = row.get("universe")
+            if row_universe not in related:
+                continue
+
+            if row.get("kind") in _EXCLUDED_KINDS:
+                continue
+
+            key = (row.get("code_hash"), row.get("data_hash"), row_universe)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+
+            # Stage-1 rows are excluded from stage-2 correction.
+            # Legacy rows (stage=None) are INCLUDED (conservative).
+            row_stage = row.get("stage")
+            if row_stage == 1:
+                continue
 
             count += 1
 

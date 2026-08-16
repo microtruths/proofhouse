@@ -277,3 +277,46 @@ class BlockRegistry:
 
         block["segment"] = new_segment
         self._save()
+
+    def enforce_block_isolation(self, block_ids, stage):
+        """Enforce block segment constraints for a given stage.
+
+        Parent plan §5.2: A stage-1 row touching segment V is a HARD ERROR.
+        Stage-1 runs may only touch E, S1, S2 blocks.
+        Stage-2 runs may touch V blocks.
+
+        Args:
+            block_ids: List of block IDs to check.
+            stage: Stage label (1 or 2).
+
+        Raises:
+            ValueError: If any block violates the stage constraint.
+        """
+        # Segments allowed at each stage
+        _STAGE_ALLOWED = {
+            1: frozenset({"E", "S1", "S2"}),
+            2: frozenset({"E", "S1", "S2", "V", "R", "L"}),
+        }
+
+        if stage not in _STAGE_ALLOWED:
+            raise ValueError("Invalid stage {}. Must be 1 or 2.".format(stage))
+
+        allowed = _STAGE_ALLOWED[stage]
+
+        for block_id in block_ids:
+            if block_id not in self._blocks:
+                raise KeyError("Block not found: {}".format(block_id))
+
+            block = self._blocks[block_id]
+            segment = block.get("segment", "")
+
+            if segment not in allowed:
+                raise ValueError(
+                    "Block {} (segment {}) cannot be touched at stage {}. "
+                    "Stage-{} runs may only touch segments: {}. "
+                    "This is a hard error, not a warning (§5.2).".format(
+                        block_id, segment, stage, stage,
+                        ", ".join(sorted(allowed))
+                    )
+                )
+
