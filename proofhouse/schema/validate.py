@@ -3,7 +3,7 @@
 Validation for proofhouse registry entries.
 
 Phase 0 Build Plan §5 — the six enforced checks (E1–E6) plus
-schema validators V1–V12.
+schema validators V1–V14.
 
 E1: Gate combination required, no default (A5)
 E2: Threshold anti-circularity — derived source_blocks may not have segment V (A2)
@@ -24,6 +24,9 @@ V-9:  depends_on referencing nonexistent entry → rejected
 V-10: power_check.value.pending without fill_rule → rejected
 V-11: schema_version must be present and valid
 V-12: feasibility.sleeve_range must be a 2-element list of decimal strings
+V-13: p_value_sidedness required, no default (one-sided | two-sided)
+V-14: fdr_method required, no default (bh | by), with a stated
+      dependence justification
 """
 
 import re
@@ -31,6 +34,8 @@ import re
 from proofhouse.schema.models import (
     VALID_COMPARATORS,
     VALID_SEGMENTS,
+    VALID_FDR_METHODS,
+    VALID_SIDEDNESS,
     is_benchmark_term,
 )
 from proofhouse.schema.versions import check_version
@@ -51,7 +56,7 @@ class ValidationError(Exception):
 def validate_entry(entry, block_registry=None, existing_entries=None):
     """Validate a registry entry against all checks.
 
-    Runs schema validators (V1–V12) and behavioral checks (E1–E6).
+    Runs schema validators (V1–V14) and behavioral checks (E1–E6).
 
     Args:
         entry: Dict representing the registry entry.
@@ -63,7 +68,7 @@ def validate_entry(entry, block_registry=None, existing_entries=None):
     """
     errors = []
 
-    # --- Schema validators (V1–V12) ---
+    # --- Schema validators (V1–V14) ---
 
     # V-11: schema_version must be present and valid
     sv = entry.get("schema_version")
@@ -250,6 +255,70 @@ def validate_entry(entry, block_registry=None, existing_entries=None):
                 "missing. A pending field must carry its fill rule at lock "
                 "time (A3)."
             )
+
+    # V-13: p_value_sidedness required, no default.
+    #
+    # The choice halves or doubles every p-value, which directly decides
+    # what survives an FDR batch — the same class of load-bearing choice
+    # as gate.combination (A5), and it gets the same treatment: required,
+    # no default, registration fails without it.
+    #
+    # One-sided is the appropriate choice for this harness because the
+    # direction is genuinely fixed before the data is seen: polarity is a
+    # registered parameter, the artifact reads parameters from the entry
+    # rather than embedding constants, the artifact hash gates execution,
+    # and changing polarity post-registration invalidates the validation
+    # window. That is the guarantee published research usually lacks —
+    # Harvey/Liu/Zhu use two-sided precisely because factor signs there are
+    # chosen post hoc, while White's Reality Check, Hansen's SPA and the
+    # Deflated Sharpe Ratio are all one-sided by construction.
+    #
+    # Two-sided remains available for mechanisms that genuinely do not
+    # imply a sign.
+    sidedness = entry.get("p_value_sidedness")
+    if not sidedness:
+        errors.append(
+            "V-13: p_value_sidedness is missing. Required, no default "
+            "(one-sided | two-sided). The choice halves or doubles every "
+            "p-value and therefore decides FDR survivors."
+        )
+    elif sidedness not in VALID_SIDEDNESS:
+        errors.append(
+            "V-13: p_value_sidedness must be one of {}; got {!r}".format(
+                sorted(VALID_SIDEDNESS), sidedness
+            )
+        )
+
+    # V-14: fdr_method required, no default; dependence assumption justified.
+    #
+    # Same A5 pattern as gate.combination (V-3) and p_value_sidedness (V-13).
+    # BH and BY control FDR under different dependence assumptions and give
+    # materially different answers — on the published BH (1995) example, BH
+    # rejects 4 and BY rejects 3. A silent default would pick the dependence
+    # assumption on the researcher's behalf.
+    #
+    # The justification is required because writing "hypotheses are
+    # independent" is what forces you to notice when they are not.
+    fdr = entry.get("fdr_method")
+    if not fdr:
+        errors.append(
+            "V-14: fdr_method is missing. Required, no default (bh | by). "
+            "BH assumes independence or positive regression dependence; BY "
+            "holds under arbitrary dependence at the cost of deflating q by "
+            "H(m)."
+        )
+    elif fdr not in VALID_FDR_METHODS:
+        errors.append(
+            "V-14: fdr_method must be one of {}; got {!r}".format(
+                sorted(VALID_FDR_METHODS), fdr
+            )
+        )
+    elif not entry.get("fdr_method_justification", "").strip():
+        errors.append(
+            "V-14: fdr_method_justification is required — state the "
+            "dependence assumption. Hypotheses screened on a shared "
+            "universe are dependent, which is where 'bh' stops being safe."
+        )
 
     # --- E3: Diagnostics isolation (structural) ---
     # A4 requires that the verdict function structurally cannot read diagnostics.

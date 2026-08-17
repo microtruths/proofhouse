@@ -31,6 +31,42 @@ import json
 _EXCLUDED_FIELDS = frozenset({"hash"})
 
 
+def decimal_str(value):
+    """Convert a float to the canonical decimal string used in hashed records.
+
+    Rule 3 forbids floats in hashed records, so any computed real-valued
+    quantity (p-values, thresholds, effect sizes) is stored as a string.
+    Hand-written schema values are already written that way ("0.05"); this
+    is the same convention for values the code computes.
+
+    Format is '%.17g': the shortest fixed precision that round-trips every
+    IEEE-754 double exactly, and correctly-rounded decimal conversion is
+    specified identically across platforms and languages. That matters most
+    exactly where it looks like overkill — a p-value a few ulps either side
+    of a Benjamini-Hochberg threshold decides whether a hypothesis survives.
+
+    Args:
+        value: A float, int, or an already-formatted decimal string.
+
+    Returns:
+        str: canonical decimal representation.
+
+    Raises:
+        TypeError: If value is not a real number or string.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        raise TypeError("decimal_str does not accept bool; got {!r}".format(value))
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return "%.17g" % value
+    raise TypeError(
+        "decimal_str expects float, int, or str; got {}".format(type(value).__name__)
+    )
+
+
 def canonical_bytes(record):
     """Return the canonical byte representation of a record.
 

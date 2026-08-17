@@ -269,3 +269,185 @@ def benchmark_sensitivity(returns, benchmarks):
         "benchmarks": results,
         "sign_flip_detected": sign_flip,
     }
+
+
+# ---------------------------------------------------------------------------
+# Parametric p-values
+#
+# Phase 1 Completion Plan §2.4:
+#     "Parametric — from the statistic and n_effective. For Spearman IC:
+#      t = IC * sqrt((n-2)/(1-IC^2)), two-sided. This is what reproduces
+#      AgentCopy's t = 2.59."
+#
+# Pure stdlib by design. The rest of this package uses only `math`, and a
+# p-value that depends on whether scipy happens to be installed would make
+# the harness's own results environment-dependent — unacceptable for a
+# reproducibility substrate.
+#
+# The Student's t CDF is computed exactly via the regularized incomplete
+# beta function, not by a normal approximation. The approximation is fine
+# at df = 4429 (the AgentCopy case) and silently wrong at df = 8 — and
+# small-df cases are expected here, since `regime-prediction` hypotheses
+# have as few independent events as there are regime transitions.
+# ---------------------------------------------------------------------------
+
+_VALID_SIDEDNESS = ("one-sided", "two-sided")
+
+
+def spearman_t(ic, n):
+    """Convert a Spearman rank correlation to a t-statistic.
+
+    Verbatim from the Phase 1 Completion Plan §2.4:
+        "For Spearman IC: t = IC * sqrt((n-2)/(1-IC^2)), two-sided."
+
+    Degrees of freedom are n - 2.
+
+    Sign is preserved: a negative IC yields a negative t. An anti-signal
+    is not a weak signal.
+
+    Args:
+        ic: Spearman rank correlation in (-1, 1).
+        n: Number of paired observations (the cross-section size).
+
+    Returns:
+        float: the t-statistic.
+
+    Raises:
+        ValueError: if n < 3 (df would be < 1), or if |ic| >= 1
+                    (the denominator vanishes — undefined, not infinite).
+    """
+    if n < 3:
+        raise ValueError(
+            "n must be at least 3 to give df >= 1; got n={}".format(n)
+        )
+    if abs(ic) >= 1.0:
+        raise ValueError(
+            "|ic| must be < 1; got ic={!r}. At |ic| = 1 the statistic is "
+            "undefined, not infinite.".format(ic)
+        )
+
+    return ic * math.sqrt((n - 2) / (1.0 - ic * ic))
+
+
+def p_from_t(t, df, sidedness):
+    """Compute a p-value from a t-statistic.
+
+    `sidedness` is REQUIRED and has no default. The choice halves or
+    doubles every p-value, which directly changes what survives an FDR
+    batch — exactly the kind of load-bearing choice that decision A5
+    says must never carry a silent default.
+
+    For `one-sided`, the alternative hypothesis is "effect > 0". A
+    negative t therefore yields a p-value near 1, not near 0.
+
+    Args:
+        t: The t-statistic.
+        df: Degrees of freedom (> 0).
+        sidedness: 'one-sided' or 'two-sided'.
+
+    Returns:
+        float: p-value in [0, 1].
+
+    Raises:
+        ValueError: if df <= 0 or sidedness is not a valid option.
+    """
+    if sidedness not in _VALID_SIDEDNESS:
+        raise ValueError(
+            "sidedness must be one of {}; got {!r}".format(
+                _VALID_SIDEDNESS, sidedness
+            )
+        )
+    if df <= 0:
+        raise ValueError("df must be positive; got {!r}".format(df))
+
+    # P(|T| > |t|) = I_{df/(df+t^2)}(df/2, 1/2)
+    x = df / (df + float(t) * float(t))
+    two_sided = _betai(df / 2.0, 0.5, x)
+
+    # Clamp: the continued fraction can return a value a few ulps outside
+    # [0, 1] at extreme arguments.
+    two_sided = min(1.0, max(0.0, two_sided))
+
+    if sidedness == "two-sided":
+        return two_sided
+
+    if t > 0:
+        return two_sided / 2.0
+    return 1.0 - two_sided / 2.0
+
+
+def _betai(a, b, x):
+    """Regularized incomplete beta function I_x(a, b).
+
+    Standard continued-fraction evaluation (Lentz's method), with the
+    symmetry transform I_x(a,b) = 1 - I_{1-x}(b,a) applied on whichever
+    side converges faster.
+    """
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+
+    log_bt = (
+        math.lgamma(a + b)
+        - math.lgamma(a)
+        - math.lgamma(b)
+        + a * math.log(x)
+        + b * math.log1p(-x)
+    )
+    bt = math.exp(log_bt)
+
+    if x < (a + 1.0) / (a + b + 2.0):
+        return bt * _betacf(a, b, x) / a
+    return 1.0 - bt * _betacf(b, a, 1.0 - x) / b
+
+
+def _betacf(a, b, x):
+    """Continued fraction for the incomplete beta function (Lentz's method)."""
+    max_iter = 300
+    eps = 3.0e-16
+    fpmin = 1.0e-300
+
+    qab = a + b
+    qap = a + 1.0
+    qam = a - 1.0
+
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    if abs(d) < fpmin:
+        d = fpmin
+    d = 1.0 / d
+    h = d
+
+    for m in range(1, max_iter + 1):
+        m2 = 2 * m
+
+        # Even step
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        if abs(d) < fpmin:
+            d = fpmin
+        c = 1.0 + aa / c
+        if abs(c) < fpmin:
+            c = fpmin
+        d = 1.0 / d
+        h *= d * c
+
+        # Odd step
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        if abs(d) < fpmin:
+            d = fpmin
+        c = 1.0 + aa / c
+        if abs(c) < fpmin:
+            c = fpmin
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+
+        if abs(delta - 1.0) < eps:
+            return h
+
+    raise RuntimeError(
+        "betacf failed to converge for a={}, b={}, x={}".format(a, b, x)
+    )

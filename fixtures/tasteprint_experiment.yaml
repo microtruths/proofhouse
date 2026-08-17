@@ -74,6 +74,18 @@ gate:
     Revise the survey instrument or scoring rubric. Do not deploy
     personalized recommendations.
 
+# V-13: required, no default. One-sided is legitimate here because the
+# direction is fixed before the data is seen — polarity is a registered
+# parameter and changing it post-registration invalidates the window.
+p_value_sidedness: one-sided
+
+# V-14: required, no default. BY because hypotheses screened on a shared
+# universe are dependent; Harvey/Liu/Zhu recommend BY for exactly this.
+fdr_method: by
+fdr_method_justification: >-
+  Hypotheses are screened on a shared universe and therefore share data;
+  positive regression dependence cannot be assumed.
+
 pass_licenses: >-
   Deploy personalized recommendations to pilot participants.
 pass_does_not_establish: >-

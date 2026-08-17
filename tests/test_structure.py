@@ -91,32 +91,48 @@ class TestStructure:
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         pkg = os.path.join(base, "proofhouse")
 
-        # Exempt names: dunders, generic interface methods, and user-facing
-        # toolkit functions that are public API for researchers (called by
-        # score_fn callbacks, at registration time, or in analysis scripts).
-        # These are intentionally not called by proofhouse internals.
+        # ------------------------------------------------------------------
+        # Exemptions are declared BY MODULE, not by name.
+        #
+        # Phase 1 Completion Plan §5. A hand-listed set of names is a
+        # ratchet: when S-2 fires, the one-line fix is to add the name,
+        # and that always feels justified. Listing names derived from
+        # whatever happened to be unwired institutionalizes the very
+        # pattern this test exists to catch — which is how
+        # screen_stage1a/1b came to be formally blessed while the
+        # screening funnel had no orchestrator at all.
+        #
+        # A module is exempt only if it is a RESEARCHER-FACING TOOLKIT:
+        # functions called by the researcher's score_fn callback, at
+        # registration/planning time, or from analysis scripts — never by
+        # proofhouse internals. Orchestration modules get no exemption.
+        #
+        # Adding a module here requires a stated reason in the same commit.
+        # ------------------------------------------------------------------
+        exempt_modules = {
+            # Statistical toolkit: called from the researcher's score_fn.
+            "proofhouse/eval/stats.py",
+            # CV toolkit: called from the researcher's evaluation code.
+            "proofhouse/eval/cv.py",
+            # Cost/feasibility toolkit: called at feasibility analysis time.
+            "proofhouse/eval/costs.py",
+            # Power toolkit: called at registration/planning time.
+            "proofhouse/eval/power.py",
+        }
+        # NOTE: proofhouse/core/screen.py is deliberately NOT exempt. It is
+        # orchestration, not a toolkit. Its functions must have real callers.
+
+        # Name-level exemptions are limited to dunders, generic interface
+        # methods dispatched dynamically, and the single user-facing entry
+        # point. Nothing may be added here to silence a specific failure.
         exempt = {
-            # Python dunders
             "__init__", "__repr__", "__str__", "__eq__", "__hash__",
-            # Generic interface methods
             "to_dict", "add",
-            # Top-level entry point (called by user, not by other modules)
+            # The top-level entry point: called by the user, by definition
+            # not by another proofhouse module.
             "run_eval",
-            # Stats toolkit (used by researcher's score_fn callback)
-            "deflated_sharpe", "panel_ic", "hit_rate",
-            "alpha_vs_benchmark", "benchmark_sensitivity_sweep",
-            # Costs toolkit (used at feasibility analysis time)
-            "check_feasibility", "min_viable_sleeve_usd",
-            "implied_min_rebalance_pct",
-            # CV toolkit (used by researcher's evaluation code)
-            "purge_indices", "embargo_test_indices", "make_cv_splits",
-            # Power toolkit (used at registration/planning time)
-            "affordable_n", "compute_power_check",
-            # Screening toolkit (called at screening stage, not per-eval)
-            "screen_stage1a", "screen_stage1b",
-            # Registration-time functions (called when setting up entries)
-            "create_implementation_pin", "declare_overlap",
-            "create_manifest",
+            # Registration-time helpers invoked when setting up entries.
+            "create_implementation_pin", "declare_overlap", "create_manifest",
         }
 
         # Phase 1: collect all public function/method names from core/ and eval/
@@ -133,6 +149,9 @@ class TestStructure:
                 if not fname.endswith(".py") or fname == "__init__.py":
                     continue
                 fpath = os.path.join(scan_dir, fname)
+                rel_mod = os.path.relpath(fpath, base).replace(os.sep, "/")
+                if rel_mod in exempt_modules:
+                    continue
                 with open(fpath) as f:
                     try:
                         tree = ast.parse(f.read(), filename=fpath)
@@ -178,9 +197,48 @@ class TestStructure:
                     name, ", ".join(def_files)
                 ))
 
-        assert unwired == [], (
-            "Public functions with zero non-test callers "
-            "(the recurring '#26 one level up' defect):\n"
-            + "\n".join("  " + u for u in unwired)
+        # ------------------------------------------------------------------
+        # Known-unwired snapshot.
+        #
+        # Not an exemption. Each entry is a DECLARED GAP with a reason and
+        # the phase that closes it. The assertion is equality, so this
+        # fails in both directions:
+        #   - a NEW unwired function appears  -> fails (the defect we want)
+        #   - a listed one gets wired         -> fails, telling you to
+        #                                        delete the line
+        #
+        # That second direction is what an exemption list can never do:
+        # exemptions go stale silently, a snapshot cannot.
+        # ------------------------------------------------------------------
+        known_unwired = {
+            "screen_stage1a":
+                "no run_screen orchestrator yet; Phase 1 Completion Plan Part C",
+            "screen_stage1b":
+                "no run_screen orchestrator yet; Phase 1 Completion Plan Part C",
+            # Part B (FDR). eval/fdr.py is deliberately NOT added to
+            # exempt_modules: it is not a researcher-facing toolkit, it is
+            # machinery run_screen calls. Declaring it here keeps the debt
+            # visible and makes the snapshot fail once Part C wires it.
+            "benjamini_hochberg":
+                "run_screen applies FDR across a batch; Part C",
+            "benjamini_yekutieli":
+                "run_screen applies FDR across a batch; Part C",
+            "harmonic_number":
+                "used by benjamini_yekutieli to deflate q; wired via Part C",
+        }
+
+        unwired_names = sorted(
+            u.split(" (")[0] for u in unwired
+        )
+        expected_names = sorted(known_unwired)
+
+        assert unwired_names == expected_names, (
+            "Unwired-function snapshot mismatch "
+            "(the recurring '#26 one level up' defect).\n"
+            "  Currently unwired: {}\n"
+            "  Declared unwired:  {}\n"
+            "If a NEW name appears, wire it or declare it with a reason.\n"
+            "If a declared name disappeared, it is now wired — delete its "
+            "line from known_unwired.".format(unwired_names, expected_names)
         )
 

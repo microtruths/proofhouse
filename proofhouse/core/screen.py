@@ -108,6 +108,57 @@ def check_effect_size_amendment(entry, original_entry):
     }
 
 
+def check_polarity_amendment(entry, original_entry):
+    """Check whether signal.parameters.polarity was changed after registration.
+
+    One-sided p-values are only legitimate when the direction was fixed
+    before the data was seen. The standard objection to one-sided testing
+    is "you would have flipped the sign if it came out the other way" —
+    this check is what forecloses it.
+
+    The project has been burned on direction twice already:
+      - failure catalog #23: a borrowed method's payoff-ratio polarity was
+        inverted and had NEGATIVE IC on this data, actively destroying the
+        composite.
+      - failure catalog #17: a justification written for a universe-pooled
+        beta survived the change to per-wallet beta, where sign flips
+        change direction-adjusted beta systematically.
+
+    A polarity change is therefore an amendment that invalidates the
+    pre-registration; enforcement of the fresh-validation-window
+    requirement lives in Registry.register().
+
+    Args:
+        entry: The current entry.
+        original_entry: The original (pre-amendment) entry.
+
+    Returns:
+        Dict with:
+            amended: bool — True if polarity changed (including being
+                     added or removed).
+            original: The original polarity, or None if absent.
+            current: The current polarity, or None if absent.
+    """
+    _MISSING = object()
+
+    orig = (original_entry.get("signal", {})
+            .get("parameters", {})
+            .get("polarity", _MISSING))
+    curr = (entry.get("signal", {})
+            .get("parameters", {})
+            .get("polarity", _MISSING))
+
+    # Absent in both is not an amendment. Present in one only is.
+    if orig is _MISSING and curr is _MISSING:
+        return {"amended": False, "original": None, "current": None}
+
+    return {
+        "amended": orig != curr,
+        "original": None if orig is _MISSING else orig,
+        "current": None if curr is _MISSING else curr,
+    }
+
+
 def screen_stage1a(entries, scored_results, fdr_q=0.3):
     """Stage 1a magnitude screen — rank by effect size, FDR filter.
 

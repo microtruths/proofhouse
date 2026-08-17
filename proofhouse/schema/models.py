@@ -45,6 +45,24 @@ VALID_COMPARATORS = frozenset({">", ">=", "<", "<="})
 # Valid block segments
 VALID_SEGMENTS = frozenset({"E", "S1", "S2", "V", "R", "L"})
 
+# p-value sidedness. Required on every entry, no default (V-13).
+# One-sided is the house choice: the direction is fixed before the data is
+# seen (registered polarity + pinned artifact + polarity-amendment rule),
+# which is the condition that makes one-sided legitimate.
+VALID_SIDEDNESS = frozenset({"one-sided", "two-sided"})
+
+# FDR procedure. Required on every entry, no default (V-14).
+#   bh — Benjamini-Hochberg: FDR under independence or positive regression
+#        dependence.
+#   by — Benjamini-Yekutieli: FDR under ARBITRARY dependence, q deflated by
+#        the harmonic number H(m).
+# Hypotheses screened on the same universe share data and are therefore
+# dependent — exactly where BH's assumption is questionable. Harvey, Liu &
+# Zhu recommend BY for this reason. The required justification field is the
+# point: writing "hypotheses are independent" forces you to notice when
+# they are not.
+VALID_FDR_METHODS = frozenset({"bh", "by"})
+
 # Benchmark terms that are NOT valid counterparties (V-1)
 # These describe performance relative to a benchmark, not who loses money.
 _BENCHMARK_TERMS = [
@@ -110,6 +128,12 @@ def make_entry_template():
             "on_pass": None,
             "on_fail": None,
         },
+        # V-13: required, no default at validation time. Present here as
+        # None so the template shows the field must be filled in.
+        "p_value_sidedness": None,
+        # V-14: required, no default. bh | by.
+        "fdr_method": None,
+        "fdr_method_justification": None,
         "pass_licenses": None,
         "pass_does_not_establish": None,
         "live_gate": {},

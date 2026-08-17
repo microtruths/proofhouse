@@ -7,19 +7,26 @@ executing an evaluation. It performs every safety check in fixed order:
 
     1. Verify artifact pin  (wall, not tripwire — #26)
     2. Enforce block isolation  (V-block in stage-1 = hard error — §5.2)
-    3. Check contamination  (transitive — §1b) — BEFORE consumption
-    4. Consume blocks  (single-use enforcement — E4/A7)
-    5. Load data via adapter
-    6. Run artifact with parameters from the entry  (not embedded constants)
-    7. Score result  (trial count FROM the ledger, never a parameter — §4)
-    8. Build manifest with full provenance  (§5.3)
-    9. Persist manifest to disk  (§5.3: "a result without a manifest...")
-   10. Append ledger row with stage and segment
-   11. Return (ScoredResult, Diagnostics, manifest)
+    3. Check contamination  (transitive — §1b)
+    4. Refuse an amended entry reusing its parent's blocks
+    5. Consume blocks  (single-use enforcement — E4/A7)
+    6. Load data via adapter
+    7. Run artifact with parameters from the entry  (not embedded constants)
+    8. Score result  (trial count FROM the ledger, never a parameter — §4)
+    9. Build manifest with full provenance  (§5.3)
+   10. Persist manifest to disk  (§5.3: "a result without a manifest...")
+   11. Append ledger row with stage and segment
+   12. Return (ScoredResult, Diagnostics, manifest)
 
-Steps 3 and 4 are ordered so that a contaminated entry does NOT burn
-its V-blocks on a run that never executes. consume_block has no inverse;
-spending blocks on a refused run is an unrecoverable loss (B1).
+Every refusal (3 and 4) precedes consumption (5) so that a rejected run
+does NOT burn its V-blocks. consume_block has no inverse; spending blocks
+on a run that never executes is an unrecoverable loss (B1).
+
+Step 4 exists because the registration-time version of the same rule is
+bypassable — validation_blocks is empty at registration in the normal
+workflow, so the overlap check passes trivially and the block is spent
+here instead. Recording at registration catches declared conflicts;
+gating at execution is what makes it structural.
 
 Parent plan §5.3:
     "A result without a manifest is not a result."
@@ -146,17 +153,47 @@ def run_eval(entry, adapter, block_registry, ledger,
             "Reason: {}".format(entry_id, contamination["reason"])
         )
 
-    # ---- Step 4: Consume blocks ----
+    # ---- Step 4: Amended entries may not reuse a parent's blocks ----
+    # Registry.register() refuses an invalidating amendment (polarity or
+    # expected_effect_size) whose validation_blocks overlap the parent's.
+    # That check alone is bypassable: validation_blocks is empty at
+    # registration in the normal workflow, so the intersection is empty
+    # and the check passes trivially — then the block gets consumed here,
+    # unobserved.
+    #
+    # Same shape as the artifact pin (#26): recording at registration
+    # catches DECLARED conflicts; gating at execution makes it structural.
+    # One-sided p-values depend on this holding.
+    for amendment in entry.get("amendments", []):
+        parent_id = amendment.get("parent_id")
+        if not parent_id:
+            continue
+        for bid in validation_blocks:
+            block = block_registry.get_block(bid)
+            prior = {c.get("entry_id") for c in block.get("consumed_by", [])}
+            if parent_id in prior:
+                raise ValueError(
+                    "Entry {} amends {} ({} changed from {!r} to {!r}), which "
+                    "invalidates the pre-registration — but block {} was "
+                    "already consumed by that parent. An amended entry must "
+                    "validate on blocks the parent did not use.".format(
+                        entry_id, parent_id, amendment.get("field"),
+                        amendment.get("original"), amendment.get("current"),
+                        bid,
+                    )
+                )
+
+    # ---- Step 5: Consume blocks ----
     # Record that this entry has touched these blocks. V-blocks are
     # single-use (E4/A7). This is where the consumption ledger that
     # replaced the hand-maintained "Preserved Assets" table gets updated.
     for bid in validation_blocks:
         block_registry.consume_block(bid, entry_id, seam_acknowledged)
 
-    # ---- Step 5: Load data ----
+    # ---- Step 6: Load data ----
     data = adapter.load_returns()
 
-    # ---- Step 6: Run artifact ----
+    # ---- Step 7: Run artifact ----
     # Parameters come from the entry, not from embedded constants.
     # This makes polarity drift unrepresentable.
     t_start = time.monotonic()
@@ -166,7 +203,7 @@ def run_eval(entry, adapter, block_registry, ledger,
     # The artifact returns (predictions, outcomes)
     predictions, outcomes = raw_result
 
-    # ---- Step 7: Score ----
+    # ---- Step 8: Score ----
     # Trial count comes FROM the ledger. The score_fn receives it as
     # an argument — it cannot read it from elsewhere. This is the
     # coupling that parent §4 requires: "read FROM the ledger, never
@@ -197,7 +234,7 @@ def run_eval(entry, adapter, block_registry, ledger,
             "got (..., {})".format(type(diagnostics).__name__)
         )
 
-    # ---- Step 8: Build manifest ----
+    # ---- Step 9: Build manifest ----
     manifest = _create_eval_manifest(
         run_id=None,  # filled after ledger append
         code_hash=expected_hash,
@@ -207,7 +244,7 @@ def run_eval(entry, adapter, block_registry, ledger,
     )
     manifest["wall_clock_seconds"] = round(t_elapsed, 3)
 
-    # ---- Step 9: Persist manifest to disk ----
+    # ---- Step 10: Persist manifest to disk ----
     # §5.3: "a result without a manifest is not a result."
     # The manifest lives on disk, not just in memory. Without this,
     # the Phase 1 exit criterion — "reproduce a past result from a
@@ -217,7 +254,7 @@ def run_eval(entry, adapter, block_registry, ledger,
     # the run_id can be set after the append and the manifest re-saved.
     # (Initial save uses a temp run_id; final save overwrites.)
 
-    # ---- Step 10: Append ledger row ----
+    # ---- Step 11: Append ledger row ----
     stats_scored = [scored.statistic]
     outcome_str = "{}={:.6f}".format(scored.statistic, scored.value)
     ledger.append_row(
@@ -231,6 +268,11 @@ def run_eval(entry, adapter, block_registry, ledger,
         outcome=outcome_str,
         stage=stage,
         segment=segment,
+        # Part A: recorded so a screening batch is reconstructible. A
+        # survivor list without the p-values that produced it is an
+        # unfalsifiable claim — BH's threshold depends on the whole batch.
+        p_value=scored.p_value,
+        n_effective=scored.n_effective,
     )
 
     # Get the run_id that was just assigned
@@ -242,7 +284,7 @@ def run_eval(entry, adapter, block_registry, ledger,
     from proofhouse.core.manifest import save_manifest
     save_manifest(manifest, manifests_dir)
 
-    # ---- Step 11: Return ----
+    # ---- Step 12: Return ----
     return EvalResult(
         scored=scored,
         diagnostics=diagnostics,

@@ -22,6 +22,7 @@ import json
 import os
 from datetime import datetime, timezone
 
+from proofhouse.chain.canonical import decimal_str
 from proofhouse.chain.hashing import content_hash
 
 
@@ -127,7 +128,8 @@ class Ledger:
     def append_row(self, code_hash, data_hash, universe, kind,
                    blocks_touched, stats_scored,
                    registry_ref=None, outcome=None,
-                   stage=None, segment=None):
+                   stage=None, segment=None,
+                   p_value=None, n_effective=None):
         """Append a row to the ledger. Written to disk immediately (7f).
 
         Each row is content-hashed and chained via prev pointers.
@@ -181,6 +183,26 @@ class Ledger:
             row["stage"] = stage
         if segment is not None:
             row["segment"] = segment
+
+        # p_value and n_effective are Phase 1 Completion (Part A) fields.
+        #
+        # A screening decision is not auditable from a survivor list alone:
+        # BH's threshold depends on every p-value in the batch, so the
+        # p-values must be in the record, not only in the survivors. Same
+        # reasoning that made the block-consumption ledger worth building.
+        #
+        # Both are omitted when None, so every pre-existing row keeps its
+        # hash unchanged (canonical serialization strips nulls).
+        # p_value is stored as a canonical DECIMAL STRING, not a float —
+        # canonical rule 3 forbids floats in hashed records so that an
+        # independent verifier reproduces identical bytes. Nowhere does
+        # that matter more: a p-value a few ulps either side of a
+        # Benjamini-Hochberg threshold decides whether a hypothesis
+        # survives. n_effective is an integer count and needs no conversion.
+        if p_value is not None:
+            row["p_value"] = decimal_str(p_value)
+        if n_effective is not None:
+            row["n_effective"] = n_effective
 
         self._write_and_chain(row)
 

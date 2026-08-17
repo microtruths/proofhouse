@@ -3,7 +3,7 @@
 Append-only registry for proofhouse entries.
 
 Entries are stored as YAML files in registry/H-YYYY-NNN.yaml.
-Each entry is validated (V1–V12, E1–E6), hashed, and chained
+Each entry is validated (V1–V14, E1–E6), hashed, and chained
 before being written to disk.
 
 Registration fails loudly on any validation error.
@@ -105,7 +105,7 @@ class Registry:
     def register(self, entry):
         """Validate, hash, chain, and persist a new entry.
 
-        Runs all validation checks (V1–V12, E1–E6). On any failure,
+        Runs all validation checks (V1–V14, E1–E6). On any failure,
         raises ValidationError with all errors collected.
 
         On success, the entry is:
@@ -141,42 +141,100 @@ class Registry:
                 "Entry {} already exists in the registry".format(entry["id"])
             )
 
-        # Validate (V1–V12, E1–E6)
+        # Validate (V1–V14, E1–E6)
         validate_entry(
             entry,
             block_registry=self._block_registry,
             existing_entries=self._entries,
         )
 
-        # Winner's curse guard: if this entry amends an existing one
-        # (via depends_on), check whether expected_effect_size was changed.
-        # Updating it after seeing stage-1 results is an amendment
-        # requiring a new validation window.
+        # ------------------------------------------------------------------
+        # Pre-registration-invalidating amendments.
+        #
+        # Two fields cannot change without invalidating the pre-registration:
+        #
+        #   expected_effect_size — winner's curse. Stage-1 survivors carry
+        #       inflated estimates; AgentCopy measured train +4,620 bps ->
+        #       test -424 bps. A stage-1-informed effect size must not feed
+        #       the stage-2 power check.
+        #
+        #   signal.parameters.polarity — one-sided p-values are legitimate
+        #       ONLY because the direction was fixed before the data was
+        #       seen. Allowing a post-hoc flip would silently convert every
+        #       one-sided test into a two-sided one at half the stated
+        #       p-value. Failure catalog #23 and #17 are both direction
+        #       errors.
+        #
+        # Enforcement, not annotation: the amended entry must validate on
+        # blocks its parent did not use. Recording the amendment without
+        # requiring fresh blocks would leave the constraint advisory, which
+        # is what "invalidates the validation window" is meant to prevent.
+        # ------------------------------------------------------------------
         depends_on = entry.get("depends_on", [])
         if depends_on:
-            from proofhouse.core.screen import check_effect_size_amendment
+            from proofhouse.core.screen import (
+                check_effect_size_amendment,
+                check_polarity_amendment,
+            )
+
+            checks = (
+                ("expected_effect_size", check_effect_size_amendment,
+                 "winner's-curse risk: a stage-1-informed effect size must "
+                 "not feed the stage-2 power check"),
+                ("signal.parameters.polarity", check_polarity_amendment,
+                 "one-sided p-values require the direction to have been "
+                 "fixed before the data was seen"),
+            )
+
             for dep_id in depends_on:
-                if dep_id in self._entries:
-                    original = self._entries[dep_id]
-                    result = check_effect_size_amendment(entry, original)
-                    if result["amended"]:
-                        entry.setdefault("amendments", [])
-                        entry["amendments"].append({
-                            "field": "expected_effect_size",
-                            "original": result["original"],
-                            "current": result["current"],
-                            "parent_id": dep_id,
-                            "note": (
-                                "Effect size changed from {} to {} after "
-                                "registration of parent {}. This is a "
-                                "winner's-curse risk and must be justified."
-                                .format(
-                                    result["original"],
-                                    result["current"],
-                                    dep_id,
-                                )
-                            ),
-                        })
+                if dep_id not in self._entries:
+                    continue
+                original = self._entries[dep_id]
+
+                for field_name, check_fn, why in checks:
+                    result = check_fn(entry, original)
+                    if not result["amended"]:
+                        continue
+
+                    parent_blocks = set(original.get("validation_blocks", []))
+                    new_blocks = set(entry.get("validation_blocks", []))
+                    reused = parent_blocks & new_blocks
+
+                    if reused:
+                        raise ValidationError([
+                            "{} changed from {!r} to {!r} relative to parent "
+                            "{}, which invalidates the pre-registration — but "
+                            "validation_blocks still reuse {}. An amended "
+                            "entry must validate on blocks the parent did not "
+                            "use ({}).".format(
+                                field_name,
+                                result["original"],
+                                result["current"],
+                                dep_id,
+                                sorted(reused),
+                                why,
+                            )
+                        ])
+
+                    entry.setdefault("amendments", [])
+                    entry["amendments"].append({
+                        "field": field_name,
+                        "original": result["original"],
+                        "current": result["current"],
+                        "parent_id": dep_id,
+                        "note": (
+                            "{} changed from {} to {} after registration of "
+                            "parent {}. Pre-registration invalidated; this "
+                            "entry validates on fresh blocks ({})."
+                            .format(
+                                field_name,
+                                result["original"],
+                                result["current"],
+                                dep_id,
+                                why,
+                            )
+                        ),
+                    })
 
         # Hash and chain
         entry.pop("hash", None)
