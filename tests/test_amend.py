@@ -118,6 +118,24 @@ class TestA1TheCardinalSin:
                 ],
             )
 
+    def test_a1_refusal_names_the_earliest_intervening_amendment(self):
+        """Audit finding. The refusal took amendments[0] in list order rather
+        than the earliest by anchor, so an unordered list pointed the auditor
+        at the wrong change. `for_entry` returns filing order today, but this
+        function is public and takes a plain list."""
+        late = _amendment(number=2, anchor="R-000009", after_hash="h2")
+        early = _amendment(number=1, anchor="R-000002", after_hash="h1")
+        early["rationale"] = "the change that actually spent the window"
+
+        with pytest.raises(RerunRefused) as exc:
+            check_rerun_lock(
+                entry_id=ENTRY, requested_blocks=["B-V-01"],
+                amendments=[late, early],          # deliberately out of order
+                ledger_rows=[_gate_row("R-000001", ["B-V-01"])],
+            )
+        assert "actually spent the window" in str(exc.value)
+        assert "A-0001" in str(exc.value)
+
     def test_a1_the_refusal_names_the_amendment_and_its_reason(self):
         """The message has to be actionable — an auditor reading it later
         needs to know which change spent the window."""

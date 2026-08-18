@@ -672,6 +672,41 @@ def evaluate_formula(text, variables):
 # Threshold resolution
 # ---------------------------------------------------------------------------
 
+def _require_finite(crit_name, value, what):
+    """Refuse a threshold that is not a finite number.
+
+    A non-finite threshold does not fail loudly — it fails INVISIBLY, which is
+    why this is a refusal rather than a comparison that happens to come out
+    False:
+
+        threshold "-inf"  ->  every >= comparison is True  ->  unconditional
+                              PASS, with a record that reads as legitimate
+        threshold "inf"   ->  every >= comparison is False ->  unconditional
+                              FAIL that looks like evidence
+        threshold "nan"   ->  EVERY comparison is False, in both directions
+        threshold "1e400" ->  silently overflows to inf
+
+    The unconditional-PASS case is the one that matters. §2.1's promise is
+    that the engine renders a comparison and nothing else; a threshold no
+    observation can fail is not a comparison, and a gate that cannot fail is
+    worse than no gate because it produces a passing record.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise GateRefusal(
+            "gate.criteria.{}: {} is {!r}, not a number.".format(
+                crit_name, what, value)
+        )
+    if math.isnan(value) or math.isinf(value):
+        raise GateRefusal(
+            "gate.criteria.{}: {} resolves to {}, which no observation can be "
+            "compared against meaningfully. A threshold of -inf passes "
+            "unconditionally, inf and nan fail unconditionally, and all three "
+            "produce a record that reads as a real verdict. Register a finite "
+            "threshold.".format(crit_name, what, value)
+        )
+    return float(value)
+
+
 def _resolve_threshold(crit_name, threshold, derived_inputs, block_registry):
     """Resolve a criterion's threshold to a float.
 
@@ -701,12 +736,14 @@ def _resolve_threshold(crit_name, threshold, derived_inputs, block_registry):
     if has_literal:
         raw = threshold["literal"]
         try:
-            return float(raw), "literal", None, []
+            parsed = float(raw)
         except (TypeError, ValueError):
             raise GateRefusal(
                 "gate.criteria.{}.threshold.literal is not a number: "
                 "{!r}".format(crit_name, raw)
             )
+        return (_require_finite(crit_name, parsed, "threshold.literal"),
+                "literal", None, [])
 
     derived = threshold["derived"] or {}
     formula = derived.get("formula")
@@ -744,7 +781,13 @@ def _resolve_threshold(crit_name, threshold, derived_inputs, block_registry):
             "rendered.".format(crit_name, formula, crit_name)
         )
 
-    value = evaluate_formula(formula, supplied)
+    # The same finiteness rule applies to a derived threshold. A formula can
+    # reach inf by overflow or nan through its inputs without any single step
+    # looking wrong, so checking only literals would leave the hole open on
+    # the path that has more ways to fall into it.
+    value = _require_finite(
+        crit_name, evaluate_formula(formula, supplied),
+        "derived threshold {!r}".format(formula))
     return value, "derived", formula, source_blocks
 
 
@@ -771,16 +814,22 @@ def _compare(actual, comparator, threshold):
 def _is_infeasible(value):
     """True when the statistic exists but has no usable value.
 
-    NaN and None mean the strategy could not form a position — an economic
-    outcome, counted as a loss. Distinct from the statistic being absent,
-    which is a pipeline failure and raises.
+    NaN, None and infinities mean the strategy could not form a usable
+    position — an economic outcome, counted as a loss. Distinct from the
+    statistic being absent, which is a pipeline failure and raises.
+
+    Infinity counts as infeasible rather than as an enormous win: an infinite
+    Sharpe means zero measured variance, which is a degenerate result rather
+    than a spectacular one. Reading it as a win would let a division-by-almost-
+    zero pass a gate.
     """
     if value is None:
         return True
     try:
-        return math.isnan(float(value))
+        as_float = float(value)
     except (TypeError, ValueError):
         return True
+    return math.isnan(as_float) or math.isinf(as_float)
 
 
 def evaluate_gate(entry, scored_results, block_registry=None,
@@ -902,6 +951,17 @@ def evaluate_gate(entry, scored_results, block_registry=None,
             )
 
         actual = result.value
+        # A bool is a type error, not an economic outcome, so it is refused
+        # rather than counted as a loss. Python would otherwise compare True
+        # as 1.0 and pass a `>= 1` gate — a verdict rendered against something
+        # that was never a measurement.
+        if isinstance(actual, bool):
+            raise GateRefusal(
+                "gate.criteria.{}: statistic {!r} has boolean value {!r}. A "
+                "gate compares measurements, and True is not one — Python "
+                "would silently compare it as 1.0.".format(
+                    name, statistic, actual)
+            )
         if _is_infeasible(actual):
             # B5: infeasibility counts as a LOSS. The cohort could not form,
             # so the edge was not there when it was needed. That is a result.

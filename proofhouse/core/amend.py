@@ -359,10 +359,17 @@ def check_rerun_lock(entry_id, requested_blocks, amendments, ledger_rows):
         if not overlap:
             continue
         gate_number = _run_number(row.get("run_id"))
-        intervening = [a for anchor, a in anchors if anchor >= gate_number]
+        intervening = [(anchor, a) for anchor, a in anchors
+                       if anchor >= gate_number]
         if not intervening:
             continue
-        first = intervening[0]
+        # Sorted by anchor, not taken in list order. The refusal names the
+        # amendment that spent the window, and that is the EARLIEST one after
+        # the gate — naming a later one would point an auditor at the wrong
+        # change. `for_entry` happens to return filing order today, but this
+        # function is public and takes a plain list, so it cannot assume it.
+        first = min(intervening, key=lambda pair: (
+            pair[0], pair[1].get("number", 0)))[1]
         raise RerunRefused(
             "Entry {} was gated on {} at {}, then amended (#{}: {}). Re-running "
             "the gate on {} would re-test a window already spent under a "

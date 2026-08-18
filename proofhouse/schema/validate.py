@@ -27,8 +27,11 @@ V-12: feasibility.sleeve_range must be a 2-element list of decimal strings
 V-13: p_value_sidedness required, no default (one-sided | two-sided)
 V-14: fdr_method required, no default (bh | by), with a stated
       dependence justification
+V-15: literal gate thresholds must be finite (-inf passes unconditionally,
+      inf/nan fail unconditionally, 1e400 overflows silently)
 """
 
+import math
 import re
 
 from proofhouse.schema.models import (
@@ -319,6 +322,43 @@ def validate_entry(entry, block_registry=None, existing_entries=None):
             "dependence assumption. Hypotheses screened on a shared "
             "universe are dependent, which is where 'bh' stops being safe."
         )
+
+    # V-15: literal thresholds must be finite numbers.
+    #
+    # Added by the Phase 2 audit. A non-finite threshold does not fail loudly,
+    # it fails invisibly: "-inf" passes unconditionally, "inf" and "nan" fail
+    # unconditionally, and "1e400" silently overflows to inf. All four produce
+    # a record that reads as a real verdict.
+    #
+    # core/gate.py refuses these at evaluation time and is the authoritative
+    # check — the same predicate is enforced here only so the problem surfaces
+    # at registration rather than after a validation block has been spent.
+    # These are not two rules that could drift; they are one predicate checked
+    # at two moments, and the later one governs.
+    for crit_name, crit in sorted((_nested_get(entry, "gate", "criteria")
+                                   or {}).items()):
+        if not isinstance(crit, dict):
+            continue
+        threshold = crit.get("threshold")
+        if not isinstance(threshold, dict) or "literal" not in threshold:
+            continue
+        raw = threshold["literal"]
+        try:
+            parsed = float(raw)
+        except (TypeError, ValueError):
+            errors.append(
+                "V-15: gate.criteria.{}.threshold.literal is not a number: "
+                "{!r}".format(crit_name, raw)
+            )
+            continue
+        if math.isnan(parsed) or math.isinf(parsed):
+            errors.append(
+                "V-15: gate.criteria.{}.threshold.literal is {!r}, which "
+                "resolves to {}. A threshold of -inf passes unconditionally "
+                "and inf/nan fail unconditionally — a gate no observation can "
+                "move is not a gate. Register a finite threshold.".format(
+                    crit_name, raw, parsed)
+            )
 
     # --- E3: Diagnostics isolation (structural) ---
     # A4 requires that the verdict function structurally cannot read diagnostics.

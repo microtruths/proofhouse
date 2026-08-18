@@ -404,3 +404,56 @@ class TestValidation:
         # so E3 does not catch this case — but it could still read the value
         # in practice. This is the documented Phase 0 limitation.
         validate_entry(entry)  # Should pass (limitation)
+
+
+class TestV15FiniteThresholds:
+    """V-15 — added by the Phase 2 audit, 2026-08-18.
+
+    A non-finite threshold fails invisibly rather than loudly. `-inf` is the
+    dangerous one: it passes unconditionally and leaves a record that reads as
+    a legitimate verdict. core/gate.py is the authoritative check; this exists
+    so the problem surfaces at registration rather than after a validation
+    block has been spent.
+    """
+
+    def _entry_with_threshold(self, literal):
+        import copy
+        import os
+        import yaml
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(here, "fixtures",
+                               "agentcopy_v10_ic_gate.yaml")) as fh:
+            entry = yaml.safe_load(fh)
+        entry = copy.deepcopy(entry)
+        entry["gate"]["criteria"]["g1"]["threshold"]["literal"] = literal
+        return entry
+
+    def test_non_finite_literals_are_refused(self):
+        from proofhouse.schema.validate import validate_entry, ValidationError
+
+        for literal in ["-inf", "inf", "nan", "NaN", "Infinity", "1e400"]:
+            try:
+                validate_entry(self._entry_with_threshold(literal))
+            except ValidationError as exc:
+                assert "V-15" in str(exc), literal
+            else:
+                raise AssertionError(
+                    "threshold {!r} was accepted at registration".format(
+                        literal))
+
+    def test_a_non_numeric_literal_is_refused(self):
+        from proofhouse.schema.validate import validate_entry, ValidationError
+
+        try:
+            validate_entry(self._entry_with_threshold("about 0.05"))
+        except ValidationError as exc:
+            assert "V-15" in str(exc)
+        else:
+            raise AssertionError("non-numeric threshold was accepted")
+
+    def test_finite_literals_still_validate(self):
+        from proofhouse.schema.validate import validate_entry
+
+        validate_entry(self._entry_with_threshold("0.05"))
+        validate_entry(self._entry_with_threshold("-0.5"))
+        validate_entry(self._entry_with_threshold("0"))

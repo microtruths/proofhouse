@@ -67,6 +67,12 @@ proofhouse explore --universe hl-perps-top20
 # Register a hypothesis
 proofhouse register fixtures/agentcopy_v10_ic_gate.yaml
 
+# Fill a field registered as pending, from its pinned rule
+proofhouse fill H-2026-AC10 power_check
+
+# Render the gate. Exits non-zero on a fail.
+proofhouse gate H-2026-AC10
+
 # Check status
 proofhouse status
 ```
@@ -79,7 +85,13 @@ proofhouse status
 | `proofhouse blocks add\|list\|complete\|promote` | Manage the block registry |
 | `proofhouse explore -u <universe>` | Log an exploration run (fast — <5s) |
 | `proofhouse register <file>` | Validate, hash, chain, and register a hypothesis |
+| `proofhouse fill <id> <field>` | Fill a pending field from its pinned rule. Once only |
+| `proofhouse gate <id>` | Render the pre-committed gate; append a `gate` ledger row |
+| `proofhouse reject --idea --reason` | Record a rejected idea so a later partial adoption shows |
 | `proofhouse status` | Show trial counts, block consumption, pending fields |
+
+`gate` exits non-zero on a fail, so it composes into a script without the
+result having to be read out of prose.
 
 ## Architecture
 
@@ -87,17 +99,21 @@ proofhouse status
 proofhouse/
   schema/          # Record types, validation, schema versioning
     models.py      # Entry schema with full field set
-    validate.py    # 6 enforced checks (E1–E6) + 10 validators (V1–V10)
+    validate.py    # 6 enforced checks (E1–E6) + 15 validators (V1–V15)
     versions.py    # SCHEMA_VERSION = 1
   chain/           # Hash chain (no imports from core/)
     canonical.py   # Deterministic JSON serialization
     hashing.py     # SHA-256 content hashing
     chain.py       # prev-pointer construction + verification
-  core/            # Registry, ledger, blocks, manifests
+  core/            # Registry, ledger, blocks, manifests, gate
     registry.py    # Append-only hypothesis store
     ledger.py      # Multiple-testing counter (per-universe)
     blocks.py      # Block registry + consumption tracking
-    manifest.py    # Run provenance
+    manifest.py    # Run provenance + the result itself
+    gate.py        # The verdict function. PURE — no clock, no I/O, no eval()
+    gate_run.py    # Orchestration: re-run lock, then verdict, then record
+    amend.py       # Amendments, rejected ideas, the re-run lock
+    fill.py        # Pending-field fills from pinned rules
   cli/
     main.py        # Click-based CLI
 ```
@@ -115,19 +131,70 @@ proofhouse/
 | E5 | Pass licensing | pass_licenses + pass_does_not_establish required, ≤200 chars |
 | E6 | Block availability | data_complete required; seams + V requires acknowledgment |
 
+## The gate
+
+`core/gate.py` reads pre-committed thresholds and returns pass or fail with no
+interpretation. It reports **0.0495 against `>= 0.05` as a fail** — no
+rounding, no "essentially passes".
+
+Three properties it holds structurally rather than by intention:
+
+- **Pure.** No clock, filesystem, randomness or network, so a stored verdict
+  reproduces forever instead of being a snapshot of a mood. Test S-3 AST-scans
+  the module to keep it that way.
+- **No `eval()`.** `gate.combination` and derived-threshold formulas are
+  registry-supplied strings; each gets a real parser over a closed grammar.
+  Identifiers are ASCII-only, so two visually identical names cannot coexist.
+- **Diagnostics isolation.** The signature has no parameter a `Diagnostics`
+  could arrive through.
+
+Two situations that look alike and are handled oppositely:
+
+| Situation | Handling |
+|---|---|
+| Strategy ran, could not form a position (NaN, empty cohort, infinity) | **Loss.** The criterion fails — the edge was not there when needed |
+| Pipeline broke; a statistic was never produced | **Not a gate outcome.** Raises, records nothing. Halt, repair, re-run |
+
+Conflating them in the permissive direction manufactures false negatives that
+look like evidence.
+
+## Amendments and the re-run lock
+
+Re-running a gate on the same window after a modification is the cardinal sin,
+and `check_rerun_lock` is its sole enforcement — holdout tokens were dropped as
+redundant, so there is no second net.
+
+Whether an amendment preceded a run is decided by **`ledger_anchor`**, the
+run_id of the last ledger row at filing time, not by timestamps. Second
+resolution is ambiguous, and the ambiguous case is exactly the one worth being
+strict about. Gate rows record `entry_hash` and amendments record
+`entry_hash_after`, which is what makes "the amendment was logged before the
+code ran" checkable rather than asserted.
+
+Deliberately allowed: replay with no intervening amendment, and re-running on
+blocks the pre-amendment gate never touched. A lock that blocks legitimate
+re-runs gets routed around, which is worse than no lock.
+
 ## Tests
 
 ```bash
 # Run all tests
 python -m pytest tests/ -v
 
-# 291 tests. The Phase 0 core:
+# 490 tests. The Phase 0 core:
 #   C-1…C-5:  Canonical serialization (byte-stability)
 #   H-1…H-4:  Hash chain (construction + tamper detection)
 #   B-1…B-4:  Block registry (consumption, seams, promotion)
 #   L-1…L-5:  Ledger (dedup, maintenance, per-universe, overlap, write timing)
-#   V-1…V-10: Validation (all schema checks)
+#   V-1…V-15: Validation (all schema checks)
 #   S-1:      Structure (import direction enforcement)
+#   S-2:      No unwired public functions — the recurring defect is never a
+#             wrong component, it is an unconnected one
+#   S-3:      gate.py imports nothing that could make a verdict depend on
+#             when or where it ran
+#
+# Phase 1–2 adds G-1…G-11 (gate engine), A-1…A-4 (amendments, re-run lock),
+# P-1…P-5 (pending-field fill).
 ```
 
 ## License

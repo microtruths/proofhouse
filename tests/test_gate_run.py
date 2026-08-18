@@ -178,18 +178,31 @@ class TestForeclosureAdvisory:
             self._entry_with("g1 and g2 and g3"),
             [("g1", False), ("g2", True), ("g3", True)],
         )
-        assert advisory == (False, "g1", ["g2", "g3"])
+        assert advisory == (False, ["g2", "g3"])
 
     def test_a_passing_or_forecloses_the_same_way(self):
         advisory = foreclosure_advisory(
             self._entry_with("g1 or g2"),
             [("g1", True), ("g2", False)],
         )
-        assert advisory == (True, "g1", ["g2"])
+        assert advisory == (True, ["g2"])
+
+    def test_advisory_is_independent_of_criterion_ordering(self):
+        """The defect this replaced: evaluate_gate iterates criteria
+        ALPHABETICALLY, so a prefix-based advisory was reporting alphabetical
+        position as though it were the order blocks were spent. The answer
+        must not move when the names do."""
+        entry = self._entry_with("gamma and alpha and beta")
+        first = foreclosure_advisory(
+            entry, [("gamma", False), ("alpha", True), ("beta", True)])
+        second = foreclosure_advisory(
+            entry, [("alpha", True), ("beta", True), ("gamma", False)])
+        assert first == second == (False, ["alpha", "beta"])
 
     def test_no_advisory_when_every_criterion_was_load_bearing(self):
-        """A conjunction that only resolves on the last criterion has nothing
-        to advise about — no block could have been saved."""
+        """A conjunction where flipping any single criterion would change the
+        verdict has nothing to advise about — no block could have been
+        saved."""
         assert foreclosure_advisory(
             self._entry_with("g1 and g2"),
             [("g1", True), ("g2", True)],
@@ -201,6 +214,14 @@ class TestForeclosureAdvisory:
         dressed as insight."""
         assert foreclosure_advisory(
             self._entry_with("g1"), [("g1", False)]) is None
+
+    def test_two_failing_criteria_are_each_non_decisive(self):
+        """Both fail a conjunction, so neither one alone decided it — either
+        could flip and the verdict would hold. Both blocks were wasted."""
+        assert foreclosure_advisory(
+            self._entry_with("g1 and g2"),
+            [("g1", False), ("g2", False)],
+        ) == (False, ["g1", "g2"])
 
     def test_advisory_does_not_touch_the_ledger_or_the_entry(self):
         """It reports; it does not act. Acting on foreclosure stays a human

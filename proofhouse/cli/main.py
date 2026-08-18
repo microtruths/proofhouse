@@ -9,6 +9,11 @@ Phase 0 Build Plan §7:
     proofhouse register   — validate, hash, chain, append (refuse on failure)
     proofhouse status     — trial counts, block consumption, pending fields
 
+Phase 2c §2:
+    proofhouse fill       — fill a pending field from its pinned rule, once
+    proofhouse gate       — render the pre-committed gate; exit 1 on a fail
+    proofhouse reject     — record a rejected idea
+
 "explore being fast is the single most load-bearing UX property in the
  project — the parent plan identifies 'you become the leak' as the
  likeliest killer, and cheapness is the entire mitigation."
@@ -504,14 +509,14 @@ def gate(entry_id):
     advisory = foreclosure_advisory(
         effective, [(c.name, c.passed) for c in verdict.criteria])
     if advisory is not None:
-        forced, decided_after, not_needed = advisory
+        forced, non_decisive = advisory
         click.echo(
-            "\nadvisory: the verdict was already {} after {}. {} could not "
-            "have changed it — if any of those cost a validation block, that "
-            "block did not need spending. Acting on this is your decision, "
-            "filed as an amendment; the tool does not stop on its own.".format(
-                "PASS" if forced else "FAIL", decided_after,
-                ", ".join(not_needed)))
+            "\nadvisory: the verdict is {} regardless of {} — flipping any of "
+            "those alone would not change it. If any cost a validation block, "
+            "that block did not need spending. Acting on this is your "
+            "decision, filed as an amendment; the tool does not stop on its "
+            "own.".format("PASS" if forced else "FAIL",
+                          ", ".join(non_decisive)))
 
     click.echo("\nrecorded as {}".format(run_id))
     if not verdict.passed:

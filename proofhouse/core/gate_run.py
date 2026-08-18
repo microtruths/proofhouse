@@ -97,18 +97,25 @@ def run_gate(entry, scored_results, ledger, code_hash, data_hash,
     return verdict, ledger.all_rows()[-1]["run_id"]
 
 
-def foreclosure_advisory(entry, ordered_outcomes):
-    """Find the earliest point at which the verdict was already decided.
+def foreclosure_advisory(entry, outcomes):
+    """Report which criteria could not have changed the verdict.
 
     A-12 proved W6+W7 could determine v11's verdict regardless of W8, letting
     W8 stay unspent and clean. A validation block is scarce, so the useful
     question is not "is this decided" — after a full evaluation it always is —
-    but "how much of this did I not need to spend?"
+    but "which of these did I not need to spend?"
 
-    So this walks the criteria in order and reports the first prefix that
-    forces the outcome. Reported against a completed evaluation it is
-    retrospective ("g2 and g3 could not have changed it"); reported mid-cycle
-    it is the live A-12 case.
+    ORDER-FREE, DELIBERATELY. An earlier version walked the criteria in order
+    and reported the first prefix that forced the outcome. That was wrong, and
+    quietly so: `evaluate_gate` iterates criteria alphabetically, so "the
+    verdict was already decided after g1" was a claim about alphabetical
+    position, which has no relationship to the order blocks were actually
+    spent. An advisory whose entire value is "that block did not need
+    spending" cannot rest on an ordering that means nothing.
+
+    So instead: a criterion is NON-DECISIVE when flipping it alone leaves the
+    verdict unchanged. That is well-defined without any ordering, and it
+    answers the question directly.
 
     THIS MUST NEVER AUTO-STOP. A-12 is careful about why its stop was
     legitimate: *"The stop fires on arithmetic, never on a judgment that the
@@ -117,28 +124,28 @@ def foreclosure_advisory(entry, ordered_outcomes):
 
     Args:
         entry: The registered entry.
-        ordered_outcomes: List of (criterion_name, passed) in evaluation
-            order.
+        outcomes: List of (criterion_name, passed), or a dict.
 
     Returns:
-        None when no proper prefix decides it — i.e. every criterion was load-
-        bearing. Otherwise (verdict, decided_after, not_needed): the forced
-        verdict, the criterion name that settled it, and the names that could
-        not have changed it.
+        None when every criterion was load-bearing (nothing to advise).
+        Otherwise (verdict, non_decisive_names).
     """
     combination = (entry.get("gate") or {}).get("combination")
-    names = [name for name, _ in ordered_outcomes]
+    known = dict(outcomes)
+    if not known:
+        return None
 
-    known = {}
-    for index, (name, passed) in enumerate(ordered_outcomes):
-        known[name] = passed
-        forced = compute_foreclosure(combination, known)
-        if forced is None:
-            continue
-        remaining = names[index + 1:]
-        if not remaining:
-            # Decided only by the last criterion: everything was needed, so
-            # there is nothing to advise about.
-            return None
-        return forced, name, remaining
-    return None
+    verdict = compute_foreclosure(combination, known)
+    if verdict is None:
+        return None
+
+    non_decisive = []
+    for name in sorted(known):
+        flipped = dict(known)
+        flipped[name] = not flipped[name]
+        if compute_foreclosure(combination, flipped) == verdict:
+            non_decisive.append(name)
+
+    if not non_decisive:
+        return None
+    return verdict, non_decisive

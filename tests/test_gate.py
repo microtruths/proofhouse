@@ -436,6 +436,58 @@ class TestG7DerivedThresholds:
             )
 
 
+class TestNonFiniteThresholds:
+    """Audit finding, 2026-08-18. A gate that cannot fail is worse than no
+    gate, because it produces a passing record.
+
+    Found by probing rather than by the tests: neither registration nor the
+    engine rejected a non-finite threshold, so `threshold: "-inf"` rendered an
+    unconditional PASS whose record read as a legitimate verdict.
+    """
+
+    def _entry(self, literal):
+        return _entry(criteria={
+            "g1": {"comparator": ">=", "threshold": {"literal": literal}},
+        })
+
+    @pytest.mark.parametrize("literal", [
+        "-inf",       # the dangerous one: unconditional PASS
+        "inf",        # unconditional FAIL that looks like evidence
+        "nan",        # every comparison False, in both directions
+        "Infinity",
+        "-Infinity",
+        "NaN",
+        "1e400",      # silently overflows to inf
+    ])
+    def test_non_finite_threshold_is_refused(self, literal):
+        with pytest.raises(GateRefusal) as exc:
+            evaluate_gate(self._entry(literal), {"ic": _scored(0.0389)})
+        assert "finite" in str(exc.value).lower()
+
+    def test_minus_infinity_no_longer_passes_unconditionally(self):
+        """The specific regression: this returned PASS for any observation."""
+        with pytest.raises(GateRefusal):
+            evaluate_gate(self._entry("-inf"), {"ic": _scored(-99999.0)})
+
+    def test_a_derived_threshold_that_overflows_is_also_refused(self):
+        """Checking only literals would leave the hole open on the path with
+        more ways to fall into it."""
+        entry = _entry_with_derived("1e400 * mean(x)", [])
+        with pytest.raises(GateRefusal):
+            evaluate_gate(entry, {"ic": _scored(0.5)},
+                          derived_inputs={"g1": {"x": [1.0, 3.0]}})
+
+    def test_a_derived_threshold_from_nan_inputs_is_refused(self):
+        entry = _entry_with_derived("mean(x)", [])
+        with pytest.raises(GateRefusal):
+            evaluate_gate(entry, {"ic": _scored(0.5)},
+                          derived_inputs={"g1": {"x": [float("nan"), 1.0]}})
+
+    def test_finite_thresholds_still_work(self):
+        assert evaluate_gate(
+            self._entry("0.05"), {"ic": _scored(0.06)}).passed is True
+
+
 class TestG8Infeasibility:
     """G-8: NaN is an economic outcome and counts as a loss."""
 
@@ -459,6 +511,26 @@ class TestG8Infeasibility:
         })
         verdict = evaluate_gate(entry, {"ic": _scored(float("nan"))})
         assert verdict.passed is False
+
+    def test_g8_infinite_statistic_is_infeasible_not_an_enormous_win(self):
+        """Audit finding. An infinite Sharpe means zero measured variance —
+        degenerate, not spectacular. Reading it as a win would let a
+        division-by-almost-zero pass a gate."""
+        verdict = evaluate_gate(_entry(), {"ic": _scored(float("inf"))})
+        assert verdict.passed is False
+        assert verdict.criteria[0].infeasible is True
+
+    def test_g8_bool_statistic_is_refused_not_compared_as_one(self):
+        """Audit finding. Python compares True as 1.0, so a boolean value
+        silently passed a `>= 1` gate — a verdict rendered against something
+        that was never a measurement. A type error, not an economic
+        outcome, so it refuses rather than counting as a loss."""
+        entry = _entry(criteria={
+            "g1": {"comparator": ">=", "threshold": {"literal": "1"}},
+        })
+        with pytest.raises(GateRefusal) as exc:
+            evaluate_gate(entry, {"ic": _scored(True)})
+        assert "boolean" in str(exc.value).lower()
 
     def test_g8_infeasible_under_not_still_loses_the_criterion(self):
         """`not g1` inverts the criterion, as registered. The point of G-8 is
