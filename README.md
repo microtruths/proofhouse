@@ -2,11 +2,55 @@
 
 Personal research harness — makes it mechanically hard to fool yourself while looking for edge.
 
+## What it's for
+
+When you test a lot of ideas against the same data, the best-looking one is usually
+lucky rather than good. You cannot tell from the inside, because every step that
+inflates a result feels reasonable while you're doing it. One more variant. A threshold
+nudged slightly. A bad month that "doesn't really count."
+
+proofhouse makes you write down what you're testing and what would count as success
+*before* you look. It counts every test you run, including the ones you abandon. It
+refuses to let you test on data you've already spent. Then it tells you pass or fail
+against what you wrote, with no room left to reinterpret.
+
+It will not find you an edge and has no opinion on whether your idea is good. It only
+makes fooling yourself expensive and visible.
+
+The difference it buys: *"I have a strategy that made 40% in backtest"* is a claim.
+*"I have a strategy that made 40%, here are the 47 other things I tried, and here's the
+standard I committed to before I looked"* is evidence.
+
+### When to reach for it
+
+- You're about to test something you might put real money behind
+- You've been trying variants a while and can't honestly say how many
+- You're about to spend data you only get to spend once
+- You'll need to answer *"how many things did you try?"* later — to an allocator, a
+  partner, or yourself in six months
+
+Not for it: poking at data to get a feel for it. That's what `explore` is — it logs the
+run in under five seconds and gets out of the way. Exploration is fine and should stay
+cheap. It just has to be *counted*, because exploration nobody counts is how the trial
+number quietly goes wrong, and every threshold here is derived from the trial number.
+
+### What it can't do
+
+It cannot count hypotheses you discarded *before* scoring them — noticing a pattern and
+quietly moving on leaves no trace, and no software catches that. It cannot stop you from
+working outside it; the defence is only that the honest path is fast. And it will
+sometimes tell you a result is weaker than you thought. That isn't a malfunction.
+
 ## What this is
 
-A research substrate that enforces declaration-time constraints on hypotheses. Registration either is or isn't well-formed; whether a hypothesis passes is a separate concern (Phase 2).
+A research substrate that enforces declaration-time constraints on hypotheses. Registration
+either is or isn't well-formed; whether a hypothesis passes is a separate concern (Phase 2).
 
-**Phase 0 delivers:** record schema, hash chain, block registry, ledger, registry with 6 enforced checks + 10 schema validators, and CLI.
+**Phase 0 delivers:** record schema, hash chain, block registry, ledger, registry with 6
+enforced checks + 10 schema validators, and CLI.
+
+**Phase 1 adds:** eval runner, p-values with declared sidedness, FDR control (BH / BY),
+the two-stage screening funnel, and the subperiod ledger.
 
 ## Quick start
 
@@ -77,7 +121,7 @@ proofhouse/
 # Run all tests
 python -m pytest tests/ -v
 
-# 76 tests covering:
+# 291 tests. The Phase 0 core:
 #   C-1…C-5:  Canonical serialization (byte-stability)
 #   H-1…H-4:  Hash chain (construction + tamper detection)
 #   B-1…B-4:  Block registry (consumption, seams, promotion)
