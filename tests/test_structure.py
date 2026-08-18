@@ -225,10 +225,22 @@ class TestStructure:
         # exemptions go stale silently, a snapshot cannot.
         # ------------------------------------------------------------------
         known_unwired = {
-            # Empty. Part C's run_screen wired the last five (screen_stage1a,
+            # Part C's run_screen wired the previous five (screen_stage1a,
             # screen_stage1b, benjamini_hochberg, benjamini_yekutieli,
             # harmonic_number). An entry here is a debt with a named payer,
             # not a dispensation — if this dict grows, say who wires it and when.
+            #
+            # PAYER: Phase 2b, the `proofhouse gate` CLI command.
+            # WHY NOT NOW: evaluate_gate's only production call site is that
+            # command, and it must not ship before 2b's re-run lock exists.
+            # A `gate` command without the lock lets you fail a gate, amend the
+            # entry, and re-run on the same window — the cardinal sin the lock
+            # is the sole enforcement of (Phase 2 plan §3.3, after holdout
+            # tokens were dropped). Shipping the command early would put the
+            # exact failure this phase exists to prevent behind a convenient
+            # verb. The engine is fully tested (tests/test_gate.py, 91 cases);
+            # what is missing is the safe way to invoke it.
+            "evaluate_gate": "wired by Phase 2b's `gate` CLI, after the re-run lock",
         }
 
         unwired_names = sorted(
