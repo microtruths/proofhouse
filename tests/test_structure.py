@@ -230,24 +230,19 @@ class TestStructure:
             # harmonic_number). An entry here is a debt with a named payer,
             # not a dispensation — if this dict grows, say who wires it and when.
             #
-            # 2b wired evaluate_gate: core/gate_run.run_gate now calls it
-            # behind the re-run lock, so it left this dict. The gap promptly
-            # reappeared ONE LEVEL UP, on run_gate itself — which is the
-            # phenomenon this test is named for and worth stating plainly
-            # rather than treating as a surprise each time. The regress
-            # terminates only at a call site with a human at it, i.e. the CLI.
+            # Empty again, and this time the whole stack is connected rather
+            # than one layer of it.
             #
-            # PAYER: Phase 2c, `proofhouse gate <entry-id>`.
-            # BLOCKED ON: a decision, not effort. The CLI must obtain the
-            # ScoredResults for an entry, and nothing persists them today —
-            # run_eval returns them in memory and writes only provenance
-            # hashes to the manifest. That also means Phase 1's stated exit
-            # criterion, "reproduce a past result from a manifest", cannot
-            # currently be checked. Resolve where scored results live before
-            # wiring the command, rather than inventing a second store here.
-            "run_gate": "wired by Phase 2c's `gate` CLI; needs scored-result persistence",
-            "from_dict": "wired by Phase 2c's `gate` CLI, which reads the result back",
-            "foreclosure_advisory": "wired by Phase 2c's `gate` CLI (advisory line in output)",
+            # Worth recording how it went, because the pattern repeats: 2a
+            # left evaluate_gate unwired; 2b wired it to run_gate and the gap
+            # reappeared ONE LEVEL UP on run_gate itself; the manifest change
+            # added from_dict and it reappeared again. Each fix was real and
+            # each moved the boundary rather than closing it. A wiring regress
+            # only terminates somewhere a human types a command, which is what
+            # Phase 2c's `gate`, `fill` and `reject` finally are.
+            #
+            # An entry here is a debt with a named payer, not a dispensation —
+            # if this dict grows, say who wires it and when.
         }
 
         unwired_names = sorted(

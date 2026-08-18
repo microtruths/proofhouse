@@ -380,29 +380,60 @@ def check_rerun_lock(entry_id, requested_blocks, amendments, ledger_rows):
         )
 
 
-def check_amendment_ordering(entry_id, original_hash, amendments, ledger_rows):
-    """Flag runs that used an entry version before its amendment was filed.
+def check_amendment_ordering(entry_id, original_hash, amendments, ledger_rows,
+                             fills=None):
+    """Flag runs that used an entry version before its paperwork was filed.
 
     §3.1: an amendment is *logged before the corresponding code runs*. This
     reconstructs, for each gate row, which entry version was in force when it
     ran, and compares that against the version the row says it used.
+
+    FILLS COUNT AS VERSION EVENTS TOO (§7.2). A fill is not an amendment — it
+    executes a registration rather than changing one — but it moves the entry
+    hash just the same. Reading only amendments would flag every post-fill
+    gate run as having run ahead of its paperwork, which is a false positive
+    in the one check whose worth depends on it firing rarely.
 
     Args:
         entry_id: The entry to check.
         original_hash: Hash of the entry as first registered.
         amendments: Amendment records for this entry, in filing order.
         ledger_rows: All ledger rows.
+        fills: Fill records for this entry (FillLog.for_entry).
 
     Returns:
         List of finding dicts, each with run_id, expected, actual and reason.
         Empty when the ordering is clean.
     """
     findings = []
-    ordered = sorted(amendments, key=lambda a: a.get("number", 0))
-    later_hashes = {
-        a.get("entry_hash_after"): a for a in ordered
-        if a.get("entry_hash_after")
-    }
+
+    # One ordering over both logs. Anchors are ledger run numbers, so events
+    # from the two logs interleave correctly without depending on
+    # second-resolution timestamps. `number` breaks ties within one anchor,
+    # which is the case where two events were filed against the same run.
+    events = [
+        {
+            "anchor": _run_number(a.get("ledger_anchor")),
+            "number": a.get("number", 0),
+            "hash": a.get("entry_hash_after"),
+            "kind": "amendment",
+            "id": a.get("amendment_id"),
+            "record": a,
+        }
+        for a in (amendments or [])
+    ] + [
+        {
+            "anchor": _run_number(f.get("ledger_anchor")),
+            "number": 0,
+            "hash": f.get("entry_hash_after"),
+            "kind": "fill",
+            "id": f.get("fill_id"),
+            "record": f,
+        }
+        for f in (fills or [])
+    ]
+    ordered = sorted(events, key=lambda e: (e["anchor"], e["number"]))
+    later_hashes = {e["hash"]: e for e in ordered if e["hash"]}
 
     for row in gate_rows_for(ledger_rows, entry_id):
         actual = row.get("entry_hash")
@@ -421,19 +452,19 @@ def check_amendment_ordering(entry_id, original_hash, amendments, ledger_rows):
 
         gate_number = _run_number(row.get("run_id"))
         in_force = original_hash
-        for amendment in ordered:
-            if _run_number(amendment.get("ledger_anchor")) < gate_number:
-                in_force = amendment.get("entry_hash_after")
+        for event in ordered:
+            if event["anchor"] < gate_number:
+                in_force = event["hash"]
         if actual == in_force:
             continue
 
         culprit = later_hashes.get(actual)
         if culprit is not None:
             reason = (
-                "ran entry version produced by amendment {} (#{}), which was "
-                "not filed until after this run. The amendment must be logged "
-                "before the code it authorizes runs.".format(
-                    culprit.get("amendment_id"), culprit.get("number"))
+                "ran entry version produced by {} {}, which was not filed "
+                "until after this run. The record must be logged before the "
+                "code it authorizes runs.".format(
+                    culprit["kind"], culprit["id"])
             )
         else:
             reason = (

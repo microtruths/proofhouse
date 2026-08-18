@@ -159,24 +159,54 @@ class TestLedgerRecording:
 
 
 class TestForeclosureAdvisory:
-    """D2: arithmetic, surfaced. Never an automatic stop."""
+    """D2: arithmetic, surfaced. Never an automatic stop.
 
-    def test_advisory_reports_a_decided_gate(self):
-        entry = _entry()
-        entry["gate"]["combination"] = "g1 and g2 and g3"
-        assert foreclosure_advisory(entry, {"g1": False}) is False
+    The useful question is not "is this decided" — after a full evaluation it
+    always is — but "how much of this did I not need to spend?" A-12's whole
+    point was that W8 could stay unspent and clean.
+    """
 
-    def test_advisory_reports_a_live_gate_as_none(self):
+    def _entry_with(self, combination):
         entry = _entry()
-        entry["gate"]["combination"] = "g1 and g2 and g3"
-        assert foreclosure_advisory(entry, {"g1": True}) is None
+        entry["gate"]["combination"] = combination
+        return entry
+
+    def test_reports_which_criteria_could_not_have_mattered(self):
+        """g1 fails a conjunction, so g2 and g3 were never load-bearing —
+        the A-12 case exactly."""
+        advisory = foreclosure_advisory(
+            self._entry_with("g1 and g2 and g3"),
+            [("g1", False), ("g2", True), ("g3", True)],
+        )
+        assert advisory == (False, "g1", ["g2", "g3"])
+
+    def test_a_passing_or_forecloses_the_same_way(self):
+        advisory = foreclosure_advisory(
+            self._entry_with("g1 or g2"),
+            [("g1", True), ("g2", False)],
+        )
+        assert advisory == (True, "g1", ["g2"])
+
+    def test_no_advisory_when_every_criterion_was_load_bearing(self):
+        """A conjunction that only resolves on the last criterion has nothing
+        to advise about — no block could have been saved."""
+        assert foreclosure_advisory(
+            self._entry_with("g1 and g2"),
+            [("g1", True), ("g2", True)],
+        ) is None
+
+    def test_no_advisory_on_a_single_criterion_gate(self):
+        """The degenerate case. Saying 'already determined, remaining criteria
+        cannot change it' when there ARE no remaining criteria is noise
+        dressed as insight."""
+        assert foreclosure_advisory(
+            self._entry_with("g1"), [("g1", False)]) is None
 
     def test_advisory_does_not_touch_the_ledger_or_the_entry(self):
         """It reports; it does not act. Acting on foreclosure stays a human
         decision filed as an amendment, exactly as A-12 was."""
         import copy
-        entry = _entry()
-        entry["gate"]["combination"] = "g1 and g2"
+        entry = self._entry_with("g1 and g2")
         snapshot = copy.deepcopy(entry)
-        foreclosure_advisory(entry, {"g1": False})
+        foreclosure_advisory(entry, [("g1", False), ("g2", True)])
         assert entry == snapshot

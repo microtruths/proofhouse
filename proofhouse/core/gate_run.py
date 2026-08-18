@@ -97,21 +97,48 @@ def run_gate(entry, scored_results, ledger, code_hash, data_hash,
     return verdict, ledger.all_rows()[-1]["run_id"]
 
 
-def foreclosure_advisory(entry, known_outcomes):
-    """Report whether the verdict is already determined. Advisory only.
+def foreclosure_advisory(entry, ordered_outcomes):
+    """Find the earliest point at which the verdict was already decided.
 
     A-12 proved W6+W7 could determine v11's verdict regardless of W8, letting
-    W8 stay unspent and clean. A validation block is scarce, so it is worth
-    knowing.
+    W8 stay unspent and clean. A validation block is scarce, so the useful
+    question is not "is this decided" — after a full evaluation it always is —
+    but "how much of this did I not need to spend?"
+
+    So this walks the criteria in order and reports the first prefix that
+    forces the outcome. Reported against a completed evaluation it is
+    retrospective ("g2 and g3 could not have changed it"); reported mid-cycle
+    it is the live A-12 case.
 
     THIS MUST NEVER AUTO-STOP. A-12 is careful about why its stop was
     legitimate: *"The stop fires on arithmetic, never on a judgment that the
     result looks bad."* Acting on this stays a human decision filed as an
     amendment, exactly as A-12 was.
 
+    Args:
+        entry: The registered entry.
+        ordered_outcomes: List of (criterion_name, passed) in evaluation
+            order.
+
     Returns:
-        None if the outcome is still live, else the forced verdict.
+        None when no proper prefix decides it — i.e. every criterion was load-
+        bearing. Otherwise (verdict, decided_after, not_needed): the forced
+        verdict, the criterion name that settled it, and the names that could
+        not have changed it.
     """
-    return compute_foreclosure(
-        (entry.get("gate") or {}).get("combination"), known_outcomes
-    )
+    combination = (entry.get("gate") or {}).get("combination")
+    names = [name for name, _ in ordered_outcomes]
+
+    known = {}
+    for index, (name, passed) in enumerate(ordered_outcomes):
+        known[name] = passed
+        forced = compute_foreclosure(combination, known)
+        if forced is None:
+            continue
+        remaining = names[index + 1:]
+        if not remaining:
+            # Decided only by the last criterion: everything was needed, so
+            # there is nothing to advise about.
+            return None
+        return forced, name, remaining
+    return None

@@ -322,12 +322,27 @@ def status():
         if entries:
             click.echo("\n=== Registry ===")
             click.echo("Entries: {}".format(len(entries)))
+            from proofhouse.core.fill import compose_filled_entry
+            fill_log = _fill_log(root)
+
             for entry in entries:
+                # Read the COMPOSED entry, not the registered one. A fill
+                # never rewrites the entry file — doing so would change its
+                # hash and orphan every later entry chained to it — so the
+                # registered YAML still says pending forever. Reporting from
+                # it would mean `status` kept announcing a pending field that
+                # had already been filled, which is the tool lying about its
+                # own state.
+                composed = compose_filled_entry(
+                    entry, fill_log.for_entry(entry["id"]))
+
                 pending = []
-                pc = entry.get("power_check", {})
+                pc = composed.get("power_check", {})
                 val = pc.get("value", {})
                 if isinstance(val, dict) and val.get("pending"):
                     pending.append("power_check")
+                elif isinstance(val, dict) and val.get("flagged"):
+                    pending.append("power_check=FLAGGED")
 
                 status_str = entry.get("status", "unknown")
                 line = "  {}: status={} mechanism={}".format(
@@ -346,6 +361,227 @@ def status():
                 click.echo("  Chain: ✗ {} error(s)".format(len(errors)))
                 for e in errors:
                     click.echo("    {}".format(e["message"]))
+
+
+# ---------------------------------------------------------------------------
+# Phase 2c — gate, fill, reject.
+#
+# These are the call sites that terminate the S-2 "unwired function" regress.
+# Every layer below has been reachable only from tests: evaluate_gate was wired
+# by run_gate, run_gate by nothing. A chain of wiring only ends somewhere a
+# human types a command.
+# ---------------------------------------------------------------------------
+
+def _ledger(root):
+    return Ledger(os.path.join(root, ".proofhouse", "ledger", "ledger.jsonl"))
+
+
+def _registry(root):
+    return Registry(os.path.join(root, ".proofhouse", "registry"),
+                    block_registry=_get_block_registry(root))
+
+
+def _amendment_log(root):
+    from proofhouse.core.amend import AmendmentLog
+    return AmendmentLog(
+        os.path.join(root, ".proofhouse", "amendments", "amendments.jsonl"))
+
+
+def _fill_log(root):
+    from proofhouse.core.fill import FillLog
+    return FillLog(
+        os.path.join(root, ".proofhouse", "fills", "fills.jsonl"))
+
+
+def _rejected_log(root):
+    from proofhouse.core.amend import RejectedIdeasLog
+    return RejectedIdeasLog(
+        os.path.join(root, ".proofhouse", "rejected", "rejected.jsonl"))
+
+
+def _last_run_id(ledger):
+    rows = ledger.all_rows()
+    return rows[-1]["run_id"] if rows else None
+
+
+def _latest_manifest_for(root, entry_id):
+    """Most recent manifest recording a result for this entry.
+
+    Manifests are named by run_id, which is monotonic, so the highest run_id
+    is the latest run. Only manifests carrying a `result` are eligible — one
+    without a result predates Phase 2b and cannot be gated on.
+    """
+    manifests_dir = os.path.join(root, ".proofhouse", "manifests")
+    if not os.path.isdir(manifests_dir):
+        return None
+    best = None
+    for fname in sorted(os.listdir(manifests_dir)):
+        if not fname.endswith(".yaml"):
+            continue
+        with open(os.path.join(manifests_dir, fname)) as fh:
+            manifest = yaml.safe_load(fh) or {}
+        if manifest.get("registry_ref") != entry_id:
+            continue
+        if not manifest.get("result"):
+            continue
+        if best is None or manifest.get("run_id", "") > best.get("run_id", ""):
+            best = manifest
+    return best
+
+
+@cli.command()
+@click.argument("entry_id")
+def gate(entry_id):
+    """Render a pre-committed gate. Pass or fail, no interpretation."""
+    from proofhouse.chain.hashing import content_hash
+    from proofhouse.core.amend import RerunRefused
+    from proofhouse.core.fill import compose_filled_entry
+    from proofhouse.core.gate import GateError
+    from proofhouse.core.gate_run import foreclosure_advisory, run_gate
+    from proofhouse.eval.types import ScoredResult
+
+    root = _get_root()
+    try:
+        entry = _registry(root).get_entry(entry_id)
+    except KeyError:
+        raise click.ClickException("No such entry: {}".format(entry_id))
+
+    manifest = _latest_manifest_for(root, entry_id)
+    if manifest is None:
+        # Not a failing gate. There is no result to compare, so there is
+        # nothing to render a verdict about (§2.5).
+        raise click.ClickException(
+            "No manifest with a recorded result for {}. Run the eval first — "
+            "a missing result is a pipeline state, not a gate outcome, so no "
+            "verdict is rendered.".format(entry_id)
+        )
+
+    scored = ScoredResult.from_dict(manifest["result"])
+    ledger = _ledger(root)
+    fills = _fill_log(root).for_entry(entry_id)
+
+    # The gate runs against the registered entry composed with its fills, and
+    # records that composed hash — which is what lets a later ordering check
+    # establish which version was in force.
+    effective = compose_filled_entry(entry, fills)
+    effective["hash"] = content_hash(
+        {k: v for k, v in effective.items() if k != "hash"})
+
+    try:
+        verdict, run_id = run_gate(
+            effective,
+            {scored.statistic: scored},
+            ledger,
+            code_hash=manifest.get("code_hash"),
+            data_hash=manifest.get("data_hash"),
+            amendments=_amendment_log(root).for_entry(entry_id),
+            block_registry=_get_block_registry(root),
+        )
+    except RerunRefused as exc:
+        raise click.ClickException(str(exc))
+    except GateError as exc:
+        raise click.ClickException(str(exc))
+
+    click.echo("{}  gate: {}".format(entry_id, verdict.combination))
+    for c in verdict.criteria:
+        actual = "infeasible" if c.infeasible else c.actual
+        click.echo("  {}  {}  {} {} {}   {}".format(
+            c.name, c.statistic, actual, c.comparator, c.threshold,
+            "PASS" if c.passed else "FAIL"))
+
+    # No softening. §2.1's whole point is that 0.0495 against >= 0.05 reads as
+    # FAIL with no adornment, and the output is where that either holds or
+    # quietly stops holding.
+    click.echo("verdict: {}".format("PASS" if verdict.passed else "FAIL"))
+    if verdict.passed:
+        click.echo("licenses: {}".format(
+            (verdict.pass_licenses or "").strip()))
+    else:
+        click.echo("licenses: (n/a — did not pass)")
+    click.echo("does not establish: {}".format(
+        (verdict.pass_does_not_establish or "").strip()))
+
+    advisory = foreclosure_advisory(
+        effective, [(c.name, c.passed) for c in verdict.criteria])
+    if advisory is not None:
+        forced, decided_after, not_needed = advisory
+        click.echo(
+            "\nadvisory: the verdict was already {} after {}. {} could not "
+            "have changed it — if any of those cost a validation block, that "
+            "block did not need spending. Acting on this is your decision, "
+            "filed as an amendment; the tool does not stop on its own.".format(
+                "PASS" if forced else "FAIL", decided_after,
+                ", ".join(not_needed)))
+
+    click.echo("\nrecorded as {}".format(run_id))
+    if not verdict.passed:
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("entry_id")
+@click.argument("field", default="power_check")
+def fill(entry_id, field):
+    """Fill a pending field from its pinned rule. Once only."""
+    from proofhouse.chain.hashing import content_hash
+    from proofhouse.core.fill import (
+        FillRefused, compose_filled_entry, fill_pending_field,
+    )
+
+    root = _get_root()
+    try:
+        entry = _registry(root).get_entry(entry_id)
+    except KeyError:
+        raise click.ClickException("No such entry: {}".format(entry_id))
+
+    log = _fill_log(root)
+    existing = log.for_entry(entry_id)
+    before = compose_filled_entry(entry, existing)
+
+    try:
+        filled, resolved = fill_pending_field(before, field)
+    except FillRefused as exc:
+        raise click.ClickException(str(exc))
+
+    def _hash(e):
+        return content_hash({k: v for k, v in e.items() if k != "hash"})
+
+    log.record(
+        entry_id=entry_id,
+        field=field,
+        rule=entry.get(field, {}).get("value", {}).get("fill_rule"),
+        inputs=entry.get(field, {}).get("inputs") or {},
+        resolved=resolved,
+        entry_hash_before=_hash(before),
+        entry_hash_after=_hash(filled),
+        ledger_anchor=_last_run_id(_ledger(root)),
+    )
+
+    value = filled[field]["value"]
+    click.echo("{}  {} filled".format(entry_id, field))
+    click.echo("  rule  : {}".format(value["fill_rule"]))
+    click.echo("  value : {}".format(value["filled"]))
+    for key in sorted(value["derivation"]):
+        click.echo("    {}: {}".format(key, value["derivation"][key]))
+    if value["flagged"]:
+        click.echo(
+            "  FLAGGED: power < 0.5 — as registered, this design is more "
+            "likely than not to miss its own hypothesized effect. Recorded, "
+            "not blocked.")
+
+
+@cli.command()
+@click.option("--idea", required=True, help="What was considered.")
+@click.option("--reason", required=True, help="Why it was rejected.")
+@click.option("--entry-id", default=None, help="Related entry, if any.")
+def reject(idea, reason, entry_id):
+    """Record a rejected idea, so a later partial adoption leaves a trace."""
+    root = _get_root()
+    record = _rejected_log(root).reject(
+        idea=idea, reason=reason, entry_id=entry_id,
+        ledger_anchor=_last_run_id(_ledger(root)),
+    )
+    click.echo("recorded {}".format(record["rejection_id"]))
 
 
 if __name__ == "__main__":
