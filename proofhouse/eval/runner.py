@@ -64,7 +64,8 @@ class EvalResult:
 
 
 def run_eval(entry, adapter, block_registry, ledger,
-             stage, score_fn, manifests_dir, seed=None):
+             stage, score_fn, manifests_dir, seed=None,
+             ledger_kind="eval", parent_run_id=None):
     """Execute a complete evaluation run with all safety guarantees.
 
     This is the ONLY public entry point. Every safety property —
@@ -261,7 +262,7 @@ def run_eval(entry, adapter, block_registry, ledger,
         code_hash=expected_hash,
         data_hash=adapter.data_hash,
         universe=universe,
-        kind="eval",
+        kind=ledger_kind,
         blocks_touched=validation_blocks,
         stats_scored=stats_scored,
         registry_ref=entry_id,
@@ -273,6 +274,11 @@ def run_eval(entry, adapter, block_registry, ledger,
         # unfalsifiable claim — BH's threshold depends on the whole batch.
         p_value=scored.p_value,
         n_effective=scored.n_effective,
+        # kind='subperiod' rows decompose a parent eval and are excluded
+        # from the trial count: k entries over s sub-periods is k trials,
+        # not k*s. The parent link is what stops the kind being a
+        # laundering hole — the ledger refuses a subperiod row without it.
+        parent_run_id=parent_run_id,
     )
 
     # Get the run_id that was just assigned

@@ -188,8 +188,22 @@ class TestStructure:
             found = False
             for rel, code in all_proofhouse_code:
                 if rel in def_files:
-                    continue  # skip the file where it's defined
-                if re.search(r'\b' + re.escape(name) + r'\b', code):
+                    # A same-module caller IS a caller. Skipping the whole
+                    # defining file was too blunt: it meant a function called
+                    # only from a sibling in its own module (run_screen ->
+                    # screen_stage1a, benjamini_yekutieli -> harmonic_number)
+                    # read as unwired. Strip only the `def` line, then search
+                    # what remains.
+                    haystack = "\n".join(
+                        line for line in code.splitlines()
+                        if not re.match(
+                            r'\s*(async\s+)?def\s+' + re.escape(name) + r'\b',
+                            line,
+                        )
+                    )
+                else:
+                    haystack = code
+                if re.search(r'\b' + re.escape(name) + r'\b', haystack):
                     found = True
                     break
             if not found:
@@ -211,20 +225,10 @@ class TestStructure:
         # exemptions go stale silently, a snapshot cannot.
         # ------------------------------------------------------------------
         known_unwired = {
-            "screen_stage1a":
-                "no run_screen orchestrator yet; Phase 1 Completion Plan Part C",
-            "screen_stage1b":
-                "no run_screen orchestrator yet; Phase 1 Completion Plan Part C",
-            # Part B (FDR). eval/fdr.py is deliberately NOT added to
-            # exempt_modules: it is not a researcher-facing toolkit, it is
-            # machinery run_screen calls. Declaring it here keeps the debt
-            # visible and makes the snapshot fail once Part C wires it.
-            "benjamini_hochberg":
-                "run_screen applies FDR across a batch; Part C",
-            "benjamini_yekutieli":
-                "run_screen applies FDR across a batch; Part C",
-            "harmonic_number":
-                "used by benjamini_yekutieli to deflate q; wired via Part C",
+            # Empty. Part C's run_screen wired the last five (screen_stage1a,
+            # screen_stage1b, benjamini_hochberg, benjamini_yekutieli,
+            # harmonic_number). An entry here is a debt with a named payer,
+            # not a dispensation — if this dict grows, say who wires it and when.
         }
 
         unwired_names = sorted(

@@ -159,46 +159,64 @@ def check_polarity_amendment(entry, original_entry):
     }
 
 
-def screen_stage1a(entries, scored_results, fdr_q=0.3):
-    """Stage 1a magnitude screen — rank by effect size, FDR filter.
+def screen_stage1a(entries, scored_results, fdr_q, fdr_method):
+    """Stage 1a magnitude screen — FDR filter, then rank by magnitude.
 
-    Runs on E/S1 blocks only. Ranks hypotheses by magnitude.
-    FDR correction at q≈0.3 (enrichment, not proof).
+    Runs on E/S1/S2 blocks only; never V (enforced upstream by
+    run_screen passing stage=1 to run_eval).
 
-    Current implementation: magnitude-rank only. The Benjamini-Hochberg
-    procedure requires p-values from the eval engine (via t-stats and SE),
-    which are not yet available in the ScoredResult interface. When they
-    are, this function will apply BH at the configured q-level.
-
-    For now, all entries with non-zero magnitude pass. This is the
-    permissive direction — it lets more through to stage 1b, where
-    the consistency screen does the actual filtering.
+    FDR at q≈0.3 is enrichment, not proof: survivors have earned a second
+    look, not a claim. Part B plan §2.
 
     Args:
-        entries: List of entry dicts.
-        scored_results: Dict of {entry_id: ScoredResult}.
-        fdr_q: FDR q-level for screening (default 0.3). Currently stored
-               but not applied until p-values are available.
+        entries: List of entry dicts (unused here; kept for symmetry with
+                 screen_stage1b and for future per-entry rules).
+        scored_results: Dict of {entry_id: ScoredResult}. Every result must
+                        carry a p_value.
+        fdr_q: FDR q-level. Required, no default — see run_screen.
+        fdr_method: 'bh' or 'by'. Required, no default (V-14).
 
     Returns:
-        List of entry IDs that survive, ranked by magnitude (descending).
+        Dict with:
+            survivors: entry IDs that pass FDR, ranked by |value| descending
+            fdr: the full result dict from the FDR procedure (m, k,
+                 threshold, method, q — everything the screen record needs)
+
+    Raises:
+        ValueError: If any result lacks a p_value, or fdr_method is unknown.
     """
-    # Rank by absolute value of the primary statistic
+    from proofhouse.eval.fdr import benjamini_hochberg, benjamini_yekutieli
+
+    procedures = {"bh": benjamini_hochberg, "by": benjamini_yekutieli}
+    if fdr_method not in procedures:
+        raise ValueError(
+            "fdr_method must be one of {}; got {!r}".format(
+                sorted(procedures), fdr_method
+            )
+        )
+
+    pairs = []
+    for entry_id, result in scored_results.items():
+        if result.p_value is None:
+            raise ValueError(
+                "entry {!r} has no p_value. The batch cannot be screened: "
+                "dropping it would shrink m, which changes every BH "
+                "threshold and therefore the survivor set.".format(entry_id)
+            )
+        pairs.append((entry_id, result.p_value))
+
+    fdr = procedures[fdr_method](pairs, fdr_q)
+    surviving = set(fdr["rejected"])
+
+    # Rank survivors by magnitude. FDR decides WHO passes; magnitude only
+    # orders them.
     ranked = sorted(
-        scored_results.items(),
-        key=lambda kv: abs(kv[1].value),
+        (eid for eid in scored_results if eid in surviving),
+        key=lambda eid: abs(scored_results[eid].value),
         reverse=True,
     )
 
-    # TODO: Apply BH procedure when ScoredResult carries p-values.
-    # BH threshold for rank i: (i / n) * fdr_q
-    # Reject H0 for all i ≤ max{i : p_i ≤ (i/n) * q}
-    survivors = [
-        entry_id for entry_id, result in ranked
-        if abs(result.value) > 0
-    ]
-
-    return survivors
+    return {"survivors": ranked, "fdr": fdr}
 
 
 def screen_stage1b(entries, scored_results, sub_period_results):
@@ -235,3 +253,183 @@ def screen_stage1b(entries, scored_results, sub_period_results):
             survivors.append(entry_id)
 
     return survivors
+
+
+def run_screen(entries, adapters, block_registry, ledger, score_fn,
+               manifests_dir, fdr_q, screen_stage="1a",
+               sub_period_adapters=None, seed=None):
+    """Screen a batch of hypotheses. The ONLY public way to run a screen.
+
+    Mirrors run_eval: fixed order, every guarantee inside it.
+
+        1. Validate the batch      (three refusals — see below)
+        2. Run each entry          via run_eval, inheriting every guarantee
+        3. Collect p-values        refuse the batch if any is None
+        4. Apply FDR               method from the entries, m = batch size
+        5. Rank / filter           screen_stage1a or 1b
+        6. Record the screen       ledger row, kind='screen'
+        7. Return survivors        with the threshold attached
+
+    Screening ALWAYS runs at eval stage 1, so block isolation refuses any
+    V-block outright. Screening never touches validation data.
+
+    Per-hypothesis multiplicity is counted by each run_eval's own row; this
+    function adds no trials.
+
+    Three refusals (Part C plan §2.2):
+
+      Mixed fdr_method  -> refuse. FDR correction applies to the FAMILY.
+          A batch where one entry declares 'bh' and another 'by' has no
+          coherent interpretation: there is no single procedure being run.
+
+      Mixed sidedness   -> ALLOWED. Sidedness is per-hypothesis and affects
+          only that hypothesis's p-value; BH consumes p-values without
+          caring how each was derived. The asymmetry with fdr_method is
+          deliberate — "both are registered fields, treat them alike" is
+          the plausible-but-wrong move.
+
+      Any p_value None  -> refuse the BATCH, not the entry. Dropping the
+          entry would shrink m, changing every threshold and therefore the
+          survivor set (determinism rule 3.3).
+
+    Args:
+        entries: List of registry entry dicts.
+        adapters: Dict of {entry_id: adapter}. Every entry must be present.
+        block_registry: BlockRegistry instance.
+        ledger: Ledger instance.
+        score_fn: Callable(predictions, outcomes, trial_count) ->
+                  (ScoredResult, Diagnostics). Must set p_value.
+        manifests_dir: Where run_eval persists manifests.
+        fdr_q: FDR q-level. A runtime parameter by decision, not a
+               registered field — a screen is enrichment, not proof, and
+               shrinking a batch after seeing results is sometimes correct.
+               Every screen is recorded, so q-shopping is visible in the
+               ledger rather than prevented.
+        screen_stage: '1a' (magnitude) or '1b' (consistency).
+        sub_period_adapters: For '1b', dict of {entry_id: [adapter, ...]}.
+                             Each sub-period run is logged as kind='subperiod'
+                             linked to its parent eval row, and excluded from
+                             the trial count — k entries over s sub-periods is
+                             k trials, not k*s.
+        seed: Optional seed passed to run_eval.
+
+    Returns:
+        Dict with: survivors, fdr (m/k/threshold/method/q), screen_run_id,
+        eval_run_ids, scored_results.
+
+    Raises:
+        ValueError: On any of the three refusals, or an unknown screen_stage.
+    """
+    from proofhouse.eval.runner import run_eval
+
+    if screen_stage not in ("1a", "1b"):
+        raise ValueError(
+            "screen_stage must be '1a' or '1b'; got {!r}".format(screen_stage)
+        )
+    if not entries:
+        raise ValueError("run_screen requires a non-empty batch")
+
+    # ---- Step 1: Validate the batch ----
+    methods = {e.get("fdr_method") for e in entries}
+    if len(methods) > 1:
+        raise ValueError(
+            "Batch declares mixed fdr_method {}. FDR correction applies to "
+            "the family, not the individual — a batch running two procedures "
+            "has no coherent interpretation. Split it or align the entries."
+            .format(sorted(m for m in methods if m))
+        )
+    fdr_method = methods.pop()
+    if not fdr_method:
+        raise ValueError(
+            "Batch entries declare no fdr_method. Required, no default (V-14)."
+        )
+
+    missing = [e["id"] for e in entries if e["id"] not in adapters]
+    if missing:
+        raise ValueError(
+            "No adapter supplied for {}. Every entry in the batch must run — "
+            "silently skipping one would shrink m.".format(missing)
+        )
+
+    # Mixed universes -> refuse, for the same reason as mixed fdr_method.
+    # Trial counts are PER-UNIVERSE (rule 7b), so entries from different
+    # universes carry different multiplicity budgets and do not belong to
+    # one FDR family. The screen record also names a single universe, so a
+    # mixed batch would be recorded under whichever entry happened to be
+    # first — a silently wrong record, which is worse than a refusal.
+    universes = {e["universe"]["id"] for e in entries}
+    if len(universes) > 1:
+        raise ValueError(
+            "Batch spans multiple universes {}. Trial counts are per-universe, "
+            "so these entries carry different multiplicity budgets and are not "
+            "one FDR family. Screen them separately.".format(sorted(universes))
+        )
+    universe = universes.pop()
+
+    # ---- Step 2: Run each entry ----
+    scored_results = {}
+    eval_run_ids = {}
+    for entry in entries:
+        entry_id = entry["id"]
+        result = run_eval(
+            entry, adapters[entry_id], block_registry, ledger,
+            stage=1, score_fn=score_fn, manifests_dir=manifests_dir, seed=seed,
+        )
+        scored_results[entry_id] = result.scored
+        eval_run_ids[entry_id] = result.run_id
+
+    # ---- Step 2b: Sub-period runs for the consistency screen ----
+    sub_period_results = {}
+    if screen_stage == "1b" and sub_period_adapters:
+        for entry in entries:
+            entry_id = entry["id"]
+            slices = []
+            for sub_adapter in sub_period_adapters.get(entry_id, []):
+                sub = run_eval(
+                    entry, sub_adapter, block_registry, ledger,
+                    stage=1, score_fn=score_fn, manifests_dir=manifests_dir,
+                    seed=seed, ledger_kind="subperiod",
+                    parent_run_id=eval_run_ids[entry_id],
+                )
+                # screen_stage1b compares these against zero for sign
+                # stability, so it needs the VALUE, not the ScoredResult.
+                slices.append(sub.scored.value)
+            sub_period_results[entry_id] = slices
+
+    # ---- Steps 3-5: FDR, then rank/filter ----
+    stage1a = screen_stage1a(entries, scored_results, fdr_q, fdr_method)
+    fdr = stage1a["fdr"]
+    survivors = stage1a["survivors"]
+
+    if screen_stage == "1b":
+        # screen_stage1b takes entry IDs, not entry dicts — its first loop
+        # uses them as dict keys.
+        consistent = screen_stage1b(
+            list(survivors),
+            {k: v for k, v in scored_results.items() if k in set(survivors)},
+            sub_period_results,
+        )
+        survivors = [eid for eid in survivors if eid in set(consistent)]
+
+    # ---- Step 6: Record the screen ----
+    # BH's threshold depends on every p-value in the batch, so a survivor
+    # list alone is unfalsifiable. m, q, method and threshold go in the
+    # record. Floats are stored as canonical decimal strings (rule 3).
+    screen_run_id = ledger.append_screen(
+        batch=[e["id"] for e in entries],
+        m=fdr["m"],
+        q=fdr_q,
+        method=fdr_method,
+        threshold=fdr["threshold"],
+        survivors=survivors,
+        screen_stage=screen_stage,
+        universe=universe,
+    )
+
+    return {
+        "survivors": survivors,
+        "fdr": fdr,
+        "screen_run_id": screen_run_id,
+        "eval_run_ids": eval_run_ids,
+        "scored_results": scored_results,
+    }

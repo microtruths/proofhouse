@@ -26,13 +26,33 @@ from proofhouse.chain.canonical import decimal_str
 from proofhouse.chain.hashing import content_hash
 
 
-# Valid row kinds (overlap_declaration is a system kind, not user-facing)
-_VALID_KINDS = frozenset({"explore", "eval", "gate", "maintenance"})
-_SYSTEM_KINDS = frozenset({"overlap_declaration"})
+# Valid row kinds.
+#
+#   subperiod — one slice of a parent eval, written by stage-1b's consistency
+#       check. NOT a separate hypothesis: k entries inspected over s
+#       sub-periods is k trials, not k*s. Each sub-period has a different
+#       data_hash, so rule 7e's dedup would otherwise count every slice
+#       separately and inflate the trial count s-fold.
+#
+#       A subperiod row MUST carry parent_run_id. Without that link the kind
+#       is a laundering hole — anything could be labelled `subperiod` to
+#       escape the count. With it, every excluded row points at an included
+#       one. Same shape as `maintenance`: excluded from the count, never
+#       unlogged.
+_VALID_KINDS = frozenset({"explore", "eval", "gate", "maintenance", "subperiod"})
+
+# System kinds — written by the harness itself, not by a researcher's run.
+#   screen — a selection DECISION, not a trial. Records the batch that
+#       produced a survivor set: BH's threshold depends on every p-value in
+#       the batch, so "these 12 survived at q=0.3" is unfalsifiable unless m
+#       and the batch are recorded.
+_SYSTEM_KINDS = frozenset({"overlap_declaration", "screen"})
 _ALL_KINDS = _VALID_KINDS | _SYSTEM_KINDS
 
-# Kinds excluded from the multiplicity count
-_EXCLUDED_KINDS = frozenset({"maintenance", "overlap_declaration"})
+# Kinds excluded from the multiplicity count.
+_EXCLUDED_KINDS = frozenset({
+    "maintenance", "overlap_declaration", "screen", "subperiod",
+})
 
 
 class Ledger:
@@ -129,7 +149,8 @@ class Ledger:
                    blocks_touched, stats_scored,
                    registry_ref=None, outcome=None,
                    stage=None, segment=None,
-                   p_value=None, n_effective=None):
+                   p_value=None, n_effective=None,
+                   parent_run_id=None):
         """Append a row to the ledger. Written to disk immediately (7f).
 
         Each row is content-hashed and chained via prev pointers.
@@ -158,6 +179,21 @@ class Ledger:
                 "Invalid kind '{}'. Must be one of: {}".format(
                     kind, ", ".join(sorted(_VALID_KINDS))
                 )
+            )
+
+        # A subperiod row is excluded from the multiplicity count, so it must
+        # prove it decomposes a counted run. Without this, `subperiod` is a
+        # way to run trials that never hit the counter.
+        if kind == "subperiod" and not parent_run_id:
+            raise ValueError(
+                "kind='subperiod' requires parent_run_id. Sub-period rows are "
+                "excluded from the trial count, so each must point at the eval "
+                "run it decomposes — otherwise the kind is a laundering hole."
+            )
+        if kind != "subperiod" and parent_run_id:
+            raise ValueError(
+                "parent_run_id is only meaningful for kind='subperiod'; "
+                "got kind={!r}".format(kind)
             )
 
         run_id = "R-{:06d}".format(self._next_run)
@@ -203,8 +239,54 @@ class Ledger:
             row["p_value"] = decimal_str(p_value)
         if n_effective is not None:
             row["n_effective"] = n_effective
+        if parent_run_id is not None:
+            row["parent_run_id"] = parent_run_id
 
         self._write_and_chain(row)
+
+    def append_screen(self, batch, m, q, method, threshold, survivors,
+                      screen_stage, universe):
+        """Record a screening DECISION. Not a trial — excluded from counting.
+
+        Benjamini-Hochberg's rejection threshold depends on every p-value in
+        the batch, so a survivor list on its own is an unfalsifiable claim:
+        the same p-value survives at m=10 and fails at m=200. Recording the
+        batch, m, q, method and threshold is what makes a screen
+        reconstructible — the same reasoning that put p_value on eval rows.
+
+        Args:
+            batch: Entry IDs that entered the procedure (defines m).
+            m: Batch size as seen by the FDR procedure.
+            q: Target FDR level.
+            method: 'bh' or 'by'.
+            threshold: Largest passing (k/m)*q, or None when nothing passed.
+            survivors: Entry IDs that survived.
+            screen_stage: '1a' or '1b'.
+            universe: Universe identifier.
+
+        Returns:
+            str: the assigned run_id.
+        """
+        row = {
+            "run_id": "SCR-{:06d}".format(self._next_run),
+            "ts_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "kind": "screen",
+            "universe": universe,
+            "screen_stage": screen_stage,
+            "batch": list(batch),
+            "m": m,
+            # Floats become canonical decimal strings (rule 3) — a threshold
+            # a few ulps out would change which hypotheses survive.
+            "q": decimal_str(q),
+            "fdr_method": method,
+            "survivors": list(survivors),
+        }
+        if threshold is not None:
+            row["threshold"] = decimal_str(threshold)
+
+        self._next_run += 1
+        self._write_and_chain(row)
+        return row["run_id"]
 
     def _write_and_chain(self, row):
         """Hash, chain, persist, and track a row."""

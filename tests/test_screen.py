@@ -266,56 +266,109 @@ class TestWinnersCurse:
 
 
 class TestScreenStage1a:
-    """Stage 1a magnitude screen tests."""
+    """Stage 1a: FDR decides who passes; magnitude only orders survivors.
 
-    def _make_result(self, value):
+    Rewritten when the BH stub was replaced (Part C). The previous tests
+    encoded the stub's behaviour — "any non-zero magnitude survives" — which
+    was the deliberately permissive placeholder, not the intended contract.
+    """
+
+    def _make_result(self, value, p_value):
         from proofhouse.eval.types import ScoredResult
-        return ScoredResult(statistic="ic", value=value, trial_count=1)
+        return ScoredResult(
+            statistic="ic", value=value, trial_count=1, p_value=p_value
+        )
 
-    def test_returns_ranked_by_magnitude(self):
-        """Survivors are ranked by descending absolute magnitude."""
+    def test_fdr_decides_membership_magnitude_only_orders(self):
+        """A large magnitude with a weak p-value does NOT survive.
+
+        This is the whole point of un-stubbing: under the stub, `huge`
+        passed on magnitude alone.
+        """
         from proofhouse.core.screen import screen_stage1a
 
         results = {
-            "weak": self._make_result(0.01),
-            "strong": self._make_result(0.10),
-            "medium": self._make_result(0.05),
+            "huge": self._make_result(0.90, 0.99),
+            "small": self._make_result(0.01, 0.001),
         }
+        out = screen_stage1a([], results, fdr_q=0.05, fdr_method="bh")
+        assert out["survivors"] == ["small"]
+        assert "huge" not in out["survivors"]
 
-        survivors = screen_stage1a([], results)
-        assert survivors == ["strong", "medium", "weak"]
-
-    def test_zero_value_excluded(self):
-        """Entries with value=0 are excluded."""
+    def test_survivors_ranked_by_magnitude(self):
+        """Among survivors, order is by descending |value|."""
         from proofhouse.core.screen import screen_stage1a
 
         results = {
-            "nonzero": self._make_result(0.05),
-            "zero": self._make_result(0.0),
+            "weak": self._make_result(0.01, 0.001),
+            "strong": self._make_result(0.10, 0.002),
+            "medium": self._make_result(0.05, 0.003),
         }
-
-        survivors = screen_stage1a([], results)
-        assert "nonzero" in survivors
-        assert "zero" not in survivors
-
-    def test_empty_results(self):
-        """Empty scored_results returns empty survivors."""
-        from proofhouse.core.screen import screen_stage1a
-
-        survivors = screen_stage1a([], {})
-        assert survivors == []
+        out = screen_stage1a([], results, fdr_q=0.3, fdr_method="bh")
+        assert out["survivors"] == ["strong", "medium", "weak"]
 
     def test_negative_values_ranked_by_absolute(self):
-        """Negative values are ranked by absolute magnitude."""
         from proofhouse.core.screen import screen_stage1a
 
         results = {
-            "neg_strong": self._make_result(-0.10),
-            "pos_weak": self._make_result(0.02),
+            "neg_strong": self._make_result(-0.10, 0.001),
+            "pos_weak": self._make_result(0.02, 0.002),
         }
+        out = screen_stage1a([], results, fdr_q=0.3, fdr_method="bh")
+        assert out["survivors"] == ["neg_strong", "pos_weak"]
 
-        survivors = screen_stage1a([], results)
-        assert survivors[0] == "neg_strong"
+    def test_missing_p_value_refuses(self):
+        """Dropping the entry would shrink m and change every threshold."""
+        from proofhouse.core.screen import screen_stage1a
+
+        results = {
+            "ok": self._make_result(0.05, 0.01),
+            "no_p": self._make_result(0.05, None),
+        }
+        try:
+            screen_stage1a([], results, fdr_q=0.3, fdr_method="bh")
+        except ValueError as e:
+            assert "p_value" in str(e)
+        else:
+            raise AssertionError("expected refusal on missing p_value")
+
+    def test_by_is_stricter_than_bh(self):
+        from proofhouse.core.screen import screen_stage1a
+
+        results = {
+            "a": self._make_result(0.10, 0.001),
+            "b": self._make_result(0.09, 0.02),
+            "c": self._make_result(0.08, 0.04),
+        }
+        bh = screen_stage1a([], results, fdr_q=0.05, fdr_method="bh")
+        by = screen_stage1a([], results, fdr_q=0.05, fdr_method="by")
+        assert set(by["survivors"]).issubset(set(bh["survivors"]))
+
+    def test_unknown_method_rejected(self):
+        from proofhouse.core.screen import screen_stage1a
+
+        try:
+            screen_stage1a([], {}, fdr_q=0.3, fdr_method="bonferroni")
+        except ValueError as e:
+            assert "fdr_method" in str(e)
+        else:
+            raise AssertionError("expected refusal on unknown fdr_method")
+
+    def test_empty_results(self):
+        from proofhouse.core.screen import screen_stage1a
+
+        out = screen_stage1a([], {}, fdr_q=0.3, fdr_method="bh")
+        assert out["survivors"] == []
+        assert out["fdr"]["m"] == 0
+
+    def test_fdr_block_returned_for_the_screen_record(self):
+        """run_screen needs m/k/threshold/method to write the screen row."""
+        from proofhouse.core.screen import screen_stage1a
+
+        results = {"a": self._make_result(0.1, 0.001)}
+        out = screen_stage1a([], results, fdr_q=0.05, fdr_method="bh")
+        for key in ("m", "k", "threshold", "method", "q"):
+            assert key in out["fdr"]
 
 
 class TestScreenStage1b:
