@@ -89,7 +89,14 @@ class TestScoredResultNewFields(unittest.TestCase):
             n_effective_basis="wallet cross-section",
         )
         d = r.to_dict()
-        self.assertEqual(d["p_value"], 0.0048)
+        # Phase 2b: to_dict became the manifest's on-disk form and now emits
+        # canonical decimal strings rather than floats. The gate reads this
+        # record and compares it against a registered threshold, so a value
+        # that shifts on a YAML round-trip could flip a verdict at a
+        # boundary — the same reasoning that put decimal strings on ledger
+        # p-values. n_effective stays an int; it is a count.
+        self.assertEqual(d["p_value"], "0.0047999999999999996")  # '%.17g'
+        self.assertEqual(float(d["p_value"]), 0.0048)            # round-trips
         self.assertEqual(d["n_effective"], 4431)
         self.assertEqual(d["n_effective_basis"], "wallet cross-section")
 

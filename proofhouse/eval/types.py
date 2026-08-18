@@ -11,6 +11,28 @@ cannot access Diagnostics. This is the `prev` lesson: nearly free now,
 expensive to retrofit.
 """
 
+from proofhouse.chain.canonical import decimal_str
+
+
+def _canonicalize(value):
+    """Recursively render floats as canonical decimal strings.
+
+    Same rule the ledger applies (canonical rule 3): a persisted number must
+    reproduce byte-identically for an independent verifier. None passes
+    through untouched — "not computed" is a distinct state from any number,
+    and collapsing it would silently drop a hypothesis from an FDR batch or
+    silently pass it.
+    """
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        return decimal_str(value)
+    if isinstance(value, dict):
+        return {k: _canonicalize(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonicalize(v) for v in value]
+    return value
+
 
 class ScoredResult:
     """Gate-evaluable result from an eval run.
@@ -99,17 +121,90 @@ class ScoredResult:
         self.metadata = metadata or {}
 
     def to_dict(self):
-        """Serialize to a dict for manifest storage."""
+        """Serialize for manifest storage.
+
+        NUMBERS BECOME CANONICAL DECIMAL STRINGS, not floats.
+
+        Until Phase 2b this method had no production call site at all — it
+        claimed "for manifest storage" in its docstring while the manifest
+        stored only provenance hashes. Wiring it is what makes Phase 1's
+        stated exit criterion, "reproduce a past result from a manifest",
+        actually checkable.
+
+        Once a manifest is what the gate reads, its numbers decide verdicts.
+        The ledger already settled this for p-values — "a p-value a few ulps
+        either side of a Benjamini-Hochberg threshold decides whether a
+        hypothesis survives" — and the argument is stronger here, because this
+        value is compared directly against a registered threshold. A float
+        that shifts on a YAML round-trip could flip a verdict at a boundary,
+        which is precisely the case the strict-comparison rule exists for.
+
+        None is preserved rather than omitted: p_value=None means "not
+        computed" and is never silently coerced, so the distinction has to
+        survive the round-trip.
+        """
         return {
             "statistic": self.statistic,
-            "value": self.value,
+            "value": _canonicalize(self.value),
             "trial_count": self.trial_count,
-            "p_value": self.p_value,
+            "p_value": _canonicalize(self.p_value),
             "n_effective": self.n_effective,
             "n_effective_basis": self.n_effective_basis,
-            "benchmark_results": self.benchmark_results,
+            "benchmark_results": _canonicalize(self.benchmark_results),
+            # metadata is deliberately NOT canonicalized.
+            #
+            # It is an open dict of arbitrary values, so encoding its floats
+            # as strings is irreversible: on read there is no way to tell a
+            # canonicalized 0.015 from a value that was genuinely the string
+            # "0.015". The fields above are numeric by contract, so the
+            # conversion is safe there and unsafe here.
+            #
+            # This is sound rather than merely convenient because metadata is
+            # documented as "not part of the gate decision" — nothing in it is
+            # compared against a threshold, so no verdict can turn on an ulp
+            # of it. The moment something in metadata does feed a decision, it
+            # belongs in a first-class field instead, which is the same
+            # argument that pulled p_value out of metadata in Phase 1a.
             "metadata": self.metadata,
         }
+
+    @classmethod
+    def from_dict(cls, data):
+        """Rebuild a ScoredResult from its manifest form.
+
+        The inverse of to_dict, and the reason to_dict is worth having: a
+        stored result that cannot be read back is a record, not a result.
+
+        Raises:
+            ValueError: If a numeric field cannot be parsed. A manifest that
+                does not round-trip is corrupt, and saying so beats handing
+                back a plausible number.
+        """
+        def _num(key):
+            raw = data.get(key)
+            if raw is None:
+                return None
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "manifest result field {!r} is not a number: {!r}".format(
+                        key, raw)
+                )
+
+        return cls(
+            statistic=data.get("statistic"),
+            value=_num("value"),
+            trial_count=data.get("trial_count"),
+            p_value=_num("p_value"),
+            n_effective=data.get("n_effective"),
+            n_effective_basis=data.get("n_effective_basis"),
+            benchmark_results={
+                k: float(v)
+                for k, v in (data.get("benchmark_results") or {}).items()
+            },
+            metadata=data.get("metadata") or {},
+        )
 
     def __repr__(self):
         return "ScoredResult(statistic={!r}, value={!r}, trial_count={})".format(

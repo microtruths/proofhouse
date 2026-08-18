@@ -246,6 +246,7 @@ class TestStructure:
             # currently be checked. Resolve where scored results live before
             # wiring the command, rather than inventing a second store here.
             "run_gate": "wired by Phase 2c's `gate` CLI; needs scored-result persistence",
+            "from_dict": "wired by Phase 2c's `gate` CLI, which reads the result back",
             "foreclosure_advisory": "wired by Phase 2c's `gate` CLI (advisory line in output)",
         }
 

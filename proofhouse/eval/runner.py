@@ -245,6 +245,19 @@ def run_eval(entry, adapter, block_registry, ledger,
     )
     manifest["wall_clock_seconds"] = round(t_elapsed, 3)
 
+    # THE RESULT ITSELF, not only its provenance.
+    #
+    # §5.3 says "a result without a manifest is not a result", and until now
+    # the manifest carried code/data hashes but never the statistic they
+    # produced. That made the Phase 1 exit criterion — reproduce a past result
+    # from a manifest — impossible to check, and left the gate with nowhere to
+    # read scored results from, which is what blocked the `gate` CLI.
+    #
+    # Diagnostics are deliberately NOT written here. A4 keeps them
+    # structurally outside the verdict; putting them in the same record the
+    # gate reads would reopen that boundary through the back door.
+    manifest["result"] = scored.to_dict()
+
     # ---- Step 10: Persist manifest to disk ----
     # §5.3: "a result without a manifest is not a result."
     # The manifest lives on disk, not just in memory. Without this,
