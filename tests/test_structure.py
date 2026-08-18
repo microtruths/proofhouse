@@ -230,17 +230,23 @@ class TestStructure:
             # harmonic_number). An entry here is a debt with a named payer,
             # not a dispensation — if this dict grows, say who wires it and when.
             #
-            # PAYER: Phase 2b, the `proofhouse gate` CLI command.
-            # WHY NOT NOW: evaluate_gate's only production call site is that
-            # command, and it must not ship before 2b's re-run lock exists.
-            # A `gate` command without the lock lets you fail a gate, amend the
-            # entry, and re-run on the same window — the cardinal sin the lock
-            # is the sole enforcement of (Phase 2 plan §3.3, after holdout
-            # tokens were dropped). Shipping the command early would put the
-            # exact failure this phase exists to prevent behind a convenient
-            # verb. The engine is fully tested (tests/test_gate.py, 91 cases);
-            # what is missing is the safe way to invoke it.
-            "evaluate_gate": "wired by Phase 2b's `gate` CLI, after the re-run lock",
+            # 2b wired evaluate_gate: core/gate_run.run_gate now calls it
+            # behind the re-run lock, so it left this dict. The gap promptly
+            # reappeared ONE LEVEL UP, on run_gate itself — which is the
+            # phenomenon this test is named for and worth stating plainly
+            # rather than treating as a surprise each time. The regress
+            # terminates only at a call site with a human at it, i.e. the CLI.
+            #
+            # PAYER: Phase 2c, `proofhouse gate <entry-id>`.
+            # BLOCKED ON: a decision, not effort. The CLI must obtain the
+            # ScoredResults for an entry, and nothing persists them today —
+            # run_eval returns them in memory and writes only provenance
+            # hashes to the manifest. That also means Phase 1's stated exit
+            # criterion, "reproduce a past result from a manifest", cannot
+            # currently be checked. Resolve where scored results live before
+            # wiring the command, rather than inventing a second store here.
+            "run_gate": "wired by Phase 2c's `gate` CLI; needs scored-result persistence",
+            "foreclosure_advisory": "wired by Phase 2c's `gate` CLI (advisory line in output)",
         }
 
         unwired_names = sorted(

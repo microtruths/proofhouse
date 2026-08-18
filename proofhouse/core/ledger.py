@@ -150,7 +150,7 @@ class Ledger:
                    registry_ref=None, outcome=None,
                    stage=None, segment=None,
                    p_value=None, n_effective=None,
-                   parent_run_id=None):
+                   parent_run_id=None, entry_hash=None):
         """Append a row to the ledger. Written to disk immediately (7f).
 
         Each row is content-hashed and chained via prev pointers.
@@ -241,6 +241,24 @@ class Ledger:
             row["n_effective"] = n_effective
         if parent_run_id is not None:
             row["parent_run_id"] = parent_run_id
+
+        # Phase 2b. WHICH VERSION of the entry this run used.
+        #
+        # §3.1 requires an amendment to be logged before the code it
+        # authorizes runs. That is unfalsifiable unless runs record the entry
+        # version they ran against — otherwise "the amendment came first" is
+        # prose, not a checkable claim. Paired with an amendment's
+        # entry_hash_after, check_amendment_ordering can reconstruct which
+        # version was in force at each run and flag any that ran ahead of
+        # their paperwork.
+        #
+        # Must be set BEFORE hashing, like every other field: adding it to the
+        # row afterwards would leave the stored hash disagreeing with the
+        # row's contents and break the chain on the next verify.
+        #
+        # Omitted when None, so every pre-existing row keeps its hash.
+        if entry_hash is not None:
+            row["entry_hash"] = entry_hash
 
         self._write_and_chain(row)
 
