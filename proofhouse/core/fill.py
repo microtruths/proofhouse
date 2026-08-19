@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 
 from proofhouse.chain.canonical import decimal_str
 from proofhouse.core.amend import _ChainedLog
-from proofhouse.eval.power import compute_power_check
+from proofhouse.eval.power import compute_power_check, compute_power_events
 
 # Blocks are the 2-month unit from parent plan §2.4.1. Pinned here, in one
 # named place, because the conversion below is the kind of error that produces
@@ -131,8 +131,93 @@ def _rule_power(inputs):
 # widening that grammar to n-ary calls would enlarge the surface guarding the
 # gate in order to serve a feature that needs no grammar at all. A lookup has
 # nothing to escape from.
+def _rule_power_events(inputs):
+    """Resolve `power_events(effect_ratio, n_events, n_clusters, icc,
+    prior_trials)`.
+
+    Every input maps straight through — there is no unit conversion here,
+    which is the one respect in which this rule is simpler than `power()`.
+    `effect_ratio` is dimensionless by construction (a mean over its own
+    standard deviation), which is exactly why it can score the designs the
+    Sharpe rule cannot.
+
+    icc IS REQUIRED. A missing icc refuses rather than defaulting to zero.
+    Defaulting would assert independence across events — the assumption that
+    inflates power more than any other — and a warning does not help, because
+    the warning is transient and the number it produced goes into the record
+    and stays there. This is the same refusal `power()` already makes when a
+    registration has no Sharpe-denominated effect size, and that refusal is
+    recorded in the v11 fixture as correct behaviour.
+    """
+    missing = [name for name in
+               ("effect_ratio", "n_events", "n_clusters", "icc",
+                "prior_trials")
+               if name not in inputs]
+    if missing:
+        raise FillRefused(
+            "power_events() requires inputs effect_ratio, n_events, "
+            "n_clusters, icc and prior_trials; {} missing from the registered "
+            "power_check.inputs. In particular icc has NO DEFAULT: icc=0 "
+            "asserts every event is independent, which is the assumption most "
+            "likely to inflate this number. Register it explicitly, including "
+            "as 0 if that is genuinely meant.".format(", ".join(missing))
+        )
+
+    try:
+        effect_ratio = float(inputs["effect_ratio"])
+        n_events = int(inputs["n_events"])
+        n_clusters = int(inputs["n_clusters"])
+        icc = float(inputs["icc"])
+        prior_trials = int(inputs["prior_trials"])
+    except (TypeError, ValueError) as exc:
+        # A null icc lands here rather than in the missing-key branch above,
+        # so name it explicitly — "could not convert None" would not tell a
+        # reader which input to go and register.
+        raise FillRefused(
+            "power_events() inputs are not numeric ({}). Note that a null or "
+            "blank icc is not a zero icc — it must be registered as a "
+            "number.".format(exc)
+        )
+
+    try:
+        result = compute_power_events(
+            effect_ratio=effect_ratio,
+            n_events=n_events,
+            n_clusters=n_clusters,
+            icc=icc,
+            trial_count=prior_trials,
+        )
+    except ValueError as exc:
+        raise FillRefused("power_events() refused: {}".format(exc))
+
+    return {
+        "value": result["power"],
+        "flagged": bool(result["flagged"]),
+        # deff is the step where a unit or clustering error would hide, the
+        # same role span_years plays in power()'s derivation. n_eff_cap and
+        # pct_of_cap are here because past roughly G/icc more events stop
+        # buying power, and a design planning to accumulate its way out of a
+        # weak result needs to know that before it starts.
+        "derivation": {
+            "m_bar": decimal_str(result["m_bar"]),
+            "deff": decimal_str(result["deff"]),
+            "n_eff": decimal_str(result["n_eff"]),
+            "n_eff_cap": decimal_str(result["n_eff_cap"]),
+            "pct_of_cap": decimal_str(result["pct_of_cap"]),
+            "saturated": bool(result["saturated"]),
+            "z_effect": decimal_str(result["z_effect"]),
+            "z_threshold": decimal_str(result["z_threshold"]),
+            "threshold_quantile": decimal_str(
+                result["inputs"]["threshold_quantile"]),
+        },
+    }
+
+
 _FILL_RULES = {
     "power": (_rule_power, ("effect_size", "blocks", "prior_trials")),
+    "power_events": (_rule_power_events,
+                     ("effect_ratio", "n_events", "n_clusters", "icc",
+                      "prior_trials")),
 }
 
 

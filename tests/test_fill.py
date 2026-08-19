@@ -292,3 +292,97 @@ class TestFillsCountAsVersionEvents:
             amendments=[],
             ledger_rows=[self._gate_row("R-000001", "h1")],
         )
+
+
+class TestPowerEventsFillRule:
+    """The second rule in the whitelist.
+
+    Adding it needed no infrastructure: parse_fill_rule already splits n-ary
+    calls and resolve_fill_rule already checks argument NAMES in order. It is
+    a table entry, which is the point of a named-recipe lookup over a grammar.
+    """
+
+    RULE = ("power_events(effect_ratio, n_events, n_clusters, icc, "
+            "prior_trials)")
+    INPUTS = {"effect_ratio": "0.1361", "n_events": 950, "n_clusters": 279,
+              "icc": "0.067", "prior_trials": 4}
+
+    def test_it_resolves_and_reproduces_pfr1(self):
+        result = resolve_fill_rule(self.RULE, self.INPUTS)
+
+        assert result["value"] == pytest.approx(0.8630381045, abs=1e-9)
+        assert result["flagged"] is False
+        assert result["derivation"]["saturated"] is False
+
+    def test_the_derivation_exposes_deff_and_the_cap(self):
+        """deff is where a clustering error would hide, the same role
+        span_years plays in power()'s derivation. The cap is there because a
+        design planning to accumulate its way out of a weak result needs to
+        know where accumulating stops helping."""
+        derivation = resolve_fill_rule(self.RULE, self.INPUTS)["derivation"]
+
+        for key in ("m_bar", "deff", "n_eff", "n_eff_cap", "pct_of_cap",
+                    "z_effect", "z_threshold"):
+            assert key in derivation, key
+
+    def test_a_missing_icc_refuses_and_names_icc(self):
+        """The single most important refusal in this rule.
+
+        icc=0 asserts every event is independent — the assumption that
+        inflates power more than any other. A default with a warning would
+        not do: the warning is transient and the number it produced goes into
+        the record and stays there.
+        """
+        inputs = dict(self.INPUTS)
+        del inputs["icc"]
+
+        with pytest.raises(FillRefused) as exc:
+            resolve_fill_rule(self.RULE, inputs)
+
+        assert "icc" in str(exc.value)
+        assert "NO DEFAULT" in str(exc.value)
+
+    def test_a_null_icc_is_not_a_zero_icc(self):
+        inputs = dict(self.INPUTS, icc=None)
+
+        with pytest.raises(FillRefused) as exc:
+            resolve_fill_rule(self.RULE, inputs)
+
+        assert "icc" in str(exc.value)
+
+    def test_an_explicit_zero_icc_is_accepted_and_inflates_power(self):
+        """Registering independence is allowed — it is then a claim someone
+        made rather than a default nobody chose.
+
+        Asserts WHY it must not be the default: on PFR1's own inputs, icc=0
+        raises power from 0.863 to 0.919. A default would have handed the
+        design that gain silently.
+        """
+        independent = resolve_fill_rule(self.RULE, dict(self.INPUTS, icc="0"))
+        clustered = resolve_fill_rule(self.RULE, self.INPUTS)
+
+        assert independent["derivation"]["deff"] == "1"
+        assert independent["value"] > clustered["value"]
+        assert independent["value"] == pytest.approx(0.9186441300, abs=1e-9)
+
+    def test_reordered_arguments_refuse(self):
+        with pytest.raises(FillRefused) as exc:
+            resolve_fill_rule(
+                "power_events(n_events, effect_ratio, n_clusters, icc, "
+                "prior_trials)", self.INPUTS)
+        assert "in that order" in str(exc.value)
+
+    def test_degenerate_inputs_refuse_rather_than_crashing(self):
+        """compute_power_events raises ValueError; the fill layer must turn
+        that into a FillRefused, or a bad registration surfaces as a
+        traceback instead of a refusal."""
+        with pytest.raises(FillRefused) as exc:
+            resolve_fill_rule(self.RULE, dict(self.INPUTS, n_clusters=9999))
+        assert "refused" in str(exc.value)
+
+    def test_the_sharpe_rule_still_works(self):
+        """Adding a second rule must not disturb the first."""
+        result = resolve_fill_rule(
+            "power(effect_size, blocks, prior_trials)",
+            {"effect_size": "2.0", "blocks": 24, "prior_trials": 1})
+        assert result["value"] == pytest.approx(0.7467, abs=1e-3)

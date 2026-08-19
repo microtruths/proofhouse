@@ -182,7 +182,19 @@ def _non_claims(entry, verdict):
             "The registered design has power below 0.5: it was more likely "
             "than not to miss its own hypothesized effect even if real. A "
             "failure here is weak evidence of absence.")
-    elif power.get("pending"):
+    if (power.get("derivation") or {}).get("saturated"):
+        # Kept separate from the flagged branch above. A saturated design can
+        # be perfectly well powered — the two say different things, and a
+        # reader who is told only "power 0.86" will reasonably conclude that
+        # running longer would make it 0.95.
+        claims.append(
+            "This design is near the point where more events stop buying "
+            "power ({} of the effective-sample ceiling). Past roughly "
+            "n_clusters/icc effective observations the binding lever is more "
+            "CLUSTERS — a longer window, or a different event class — not "
+            "more events.".format(
+                power["derivation"].get("pct_of_cap", "?")))
+    if power.get("pending"):
         # An unfilled power check must not read like a passed one. Silence
         # here would let a reader assume the design was adequately powered,
         # which is the assumption most likely to be wrong and least likely to
@@ -265,6 +277,16 @@ def render_text(report):
     else:
         add("{}{}".format(power["value"],
                           "   FLAGGED (< 0.5)" if power["flagged"] else ""))
+        # The derivation was assembled into the structure and never printed,
+        # so every intermediate a reader needs in order to re-derive the
+        # number instead of trusting it was recorded and invisible. That is
+        # the S-2 defect in miniature: the component was right and nothing
+        # was connected to it.
+        derivation = power.get("derivation") or {}
+        for key in sorted(derivation):
+            if key == "saturated":
+                continue
+            add("  {:<20} {}".format(key, derivation[key]))
 
     history = report["history"]
     if history["amendments"] or history["fills"]:

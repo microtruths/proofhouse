@@ -29,6 +29,8 @@ V-14: fdr_method required, no default (bh | by), with a stated
       dependence justification
 V-15: literal gate thresholds must be finite (-inf passes unconditionally,
       inf/nan fail unconditionally, 1e400 overflows silently)
+V-16: power_events requires a declared clustering unit — the icc is
+      meaningless without knowing what it correlates within
 """
 
 import math
@@ -358,6 +360,32 @@ def validate_entry(entry, block_registry=None, existing_entries=None):
                 "and inf/nan fail unconditionally — a gate no observation can "
                 "move is not a gate. Register a finite threshold.".format(
                     crit_name, raw, parsed)
+            )
+
+    # V-16: power_events must declare what its icc correlates WITHIN.
+    #
+    # An intra-cluster correlation is a number about a grouping, and the
+    # number is uninterpretable without the grouping. icc=0.067 within a
+    # trading day and icc=0.067 within an instrument are different claims
+    # about the world, and they license different designs.
+    #
+    # Declared as an input rather than inferred from prose. H-2026-PFR1's unit
+    # is currently recoverable only by reading a diagnostic's name
+    # (`intra_date_icc_realized`) and a statistic's (`clustered_t_stat`) — an
+    # inference, and one that gets harder to make as the record ages, not
+    # easier. A validator is what turns it into a claim someone filed.
+    power_block = entry.get("power_check") or {}
+    power_value = power_block.get("value") or {}
+    fill_rule = power_value.get("fill_rule") or ""
+    if "power_events" in str(fill_rule):
+        unit = (power_block.get("inputs") or {}).get("clustering_unit")
+        if not isinstance(unit, str) or not unit.strip():
+            errors.append(
+                "V-16: power_check.inputs.clustering_unit is required when "
+                "the fill rule is power_events. An icc without a declared "
+                "clustering unit is not a number a reader can check — 0.067 "
+                "within a day and 0.067 within an instrument are different "
+                "claims. State the unit (e.g. 'trading date')."
             )
 
     # --- E3: Diagnostics isolation (structural) ---

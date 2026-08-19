@@ -457,3 +457,60 @@ class TestV15FiniteThresholds:
         validate_entry(self._entry_with_threshold("0.05"))
         validate_entry(self._entry_with_threshold("-0.5"))
         validate_entry(self._entry_with_threshold("0"))
+
+
+class TestV16ClusteringUnitDeclared:
+    """V-16 — an icc without a declared clustering unit is uncheckable.
+
+    icc=0.067 within a trading day and icc=0.067 within an instrument are
+    different claims about the world and license different designs. The
+    number alone does not say which.
+
+    Declared as an input rather than inferred from prose. H-2026-PFR1's unit
+    is currently recoverable only by reading a diagnostic's name
+    (intra_date_icc_realized) and a statistic's (clustered_t_stat) — an
+    inference, and one that gets harder to make as the record ages.
+    """
+
+    def _entry(self, inputs):
+        entry = _make_valid_entry()
+        entry["power_check"] = {
+            "inputs": inputs,
+            "value": {
+                "pending": True,
+                "fill_rule": ("power_events(effect_ratio, n_events, "
+                              "n_clusters, icc, prior_trials)"),
+            },
+        }
+        return entry
+
+    NUMERIC = {"effect_ratio": "0.1361", "n_events": 950, "n_clusters": 279,
+               "icc": "0.067", "prior_trials": 4}
+
+    def test_power_events_without_a_clustering_unit_is_rejected(self):
+        with pytest.raises(ValidationError) as exc:
+            validate_entry(self._entry(dict(self.NUMERIC)),
+                           block_registry=_make_block_registry())
+        assert "V-16" in str(exc.value)
+
+    def test_a_blank_clustering_unit_is_not_a_declaration(self):
+        with pytest.raises(ValidationError) as exc:
+            validate_entry(
+                self._entry(dict(self.NUMERIC, clustering_unit="   ")),
+                block_registry=_make_block_registry())
+        assert "V-16" in str(exc.value)
+
+    def test_a_declared_unit_passes(self):
+        validate_entry(
+            self._entry(dict(self.NUMERIC, clustering_unit="trading date")),
+            block_registry=_make_block_registry())
+
+    def test_the_sharpe_rule_needs_no_clustering_unit(self):
+        """V-16 must fire only where an icc exists to be interpreted."""
+        entry = _make_valid_entry()
+        entry["power_check"] = {
+            "inputs": {"effect_size": "0.5", "blocks": 3, "prior_trials": 14},
+            "value": {"pending": True,
+                      "fill_rule": "power(effect_size, blocks, prior_trials)"},
+        }
+        validate_entry(entry, block_registry=_make_block_registry())

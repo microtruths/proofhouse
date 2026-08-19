@@ -282,3 +282,74 @@ class TestBenchmarkSweepCanActuallyBeReported:
                      "s2_median_gross_bps", -10729.0, 4)}
         report = build_report(entry, verdict, scored_results=plain)
         assert report["benchmark"]["sweep_missing"] is True
+
+
+class TestThePowerDerivationIsActuallyRendered:
+    """The derivation was assembled into the structure and never printed.
+
+    Every intermediate a reader needs in order to re-derive the number
+    instead of trusting it was recorded and invisible — the S-2 defect in
+    miniature: the component was right and nothing was connected to it. Same
+    shape as the benchmark sweep that could never report.
+    """
+
+    def _filled(self, entry, derivation, flagged=False):
+        entry = dict(entry)
+        entry["power_check"] = {
+            "inputs": {"effect_ratio": "0.1361", "n_events": 950,
+                       "n_clusters": 279, "icc": "0.067", "prior_trials": 4},
+            "value": {"filled": "0.8630381045", "flagged": flagged,
+                      "derivation": derivation},
+        }
+        return entry
+
+    DERIVATION = {
+        "m_bar": "3.4050179211", "deff": "1.1611362007",
+        "n_eff": "818.1641390678", "n_eff_cap": "4164.1791044776",
+        "pct_of_cap": "0.1964774", "saturated": False,
+        "z_effect": "3.8929456922", "z_threshold": "2.79887458",
+    }
+
+    def test_deff_and_the_cap_reach_the_rendered_memo(self, w6):
+        entry, verdict = w6
+        report = build_report(self._filled(entry, self.DERIVATION), verdict)
+        text = render_text(report)
+
+        assert "deff" in text
+        assert "1.1611362007" in text
+        assert "n_eff_cap" in text
+        assert "4164.1791044776" in text
+
+    def test_a_saturated_design_says_more_events_will_not_help(self, w6):
+        """A saturated design can be perfectly well powered. A reader told
+        only 'power 0.86' will reasonably conclude that running longer makes
+        it 0.95, and for this design it does not."""
+        entry, verdict = w6
+        derivation = dict(self.DERIVATION, saturated=True,
+                          pct_of_cap="0.91")
+        report = build_report(self._filled(entry, derivation), verdict)
+
+        claims = " ".join(report["non_claims"])
+        assert "more events stop buying power" in claims
+        assert "CLUSTERS" in claims
+        assert "0.91" in claims
+
+    def test_an_unsaturated_design_says_nothing_about_it(self, w6):
+        entry, verdict = w6
+        report = build_report(self._filled(entry, self.DERIVATION), verdict)
+
+        claims = " ".join(report["non_claims"])
+        assert "more events stop buying power" not in claims
+
+    def test_saturation_and_low_power_are_separate_statements(self, w6):
+        """Deliberately not folded into `flagged`. That flag means one thing
+        — power below 0.5 — and overloading it would make an existing report
+        line ambiguous about which problem it is reporting."""
+        entry, verdict = w6
+        derivation = dict(self.DERIVATION, saturated=True, pct_of_cap="0.91")
+        report = build_report(self._filled(entry, derivation, flagged=True),
+                              verdict)
+
+        claims = " ".join(report["non_claims"])
+        assert "power below 0.5" in claims
+        assert "more events stop buying power" in claims

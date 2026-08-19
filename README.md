@@ -103,7 +103,7 @@ result having to be read out of prose.
 proofhouse/
   schema/          # Record types, validation, schema versioning
     models.py      # Entry schema with full field set
-    validate.py    # 6 enforced checks (E1–E6) + 15 validators (V1–V15)
+    validate.py    # 6 enforced checks (E1–E6) + 16 validators (V1–V16)
     versions.py    # SCHEMA_VERSION = 1
   chain/           # Hash chain (no imports from core/)
     canonical.py   # Deterministic JSON serialization
@@ -180,6 +180,49 @@ code ran" checkable rather than asserted.
 Deliberately allowed: replay with no intervening amendment, and re-running on
 blocks the pre-amendment gate never touched. A lock that blocks legitimate
 re-runs gets routed around, which is worse than no lock.
+
+## Power
+
+At registration, proofhouse asks whether the design could detect its own
+hypothesized effect even if it were real. A design that could not is not
+evidence of absence when it fails, and that is the reading a failed gate
+invites.
+
+Two rules, because one denominator does not fit every design:
+
+| Rule | For | What bounds it |
+|---|---|---|
+| `power(effect_size, blocks, prior_trials)` | Sharpe-denominated portfolio designs | `z_effect → √(2T)` — depends on the **span alone** |
+| `power_events(effect_ratio, n_events, n_clusters, icc, prior_trials)` | event studies, where information scales with event count | `n_eff → n_clusters/icc` — bounds the **sample**, not the statistic |
+
+The distinction is the reason both exist. The Sharpe ceiling is independent of
+the effect size: at 3 two-month blocks power asymptotes at **0.259 for any
+effect size**, Sharpe 100 included, so no strategy however good clears it. The
+event ceiling binds the sample, and `z = r·√n_eff` still rises without bound in
+`r`, so a large enough effect always clears any threshold.
+
+That is *not* an escape from the span constraint, and the table is easy to
+over-read. `n_clusters` is an event count, and event counts scale with the
+window. The ceiling moved from `√(2T)` to `√G` with `G >> T` — a far better
+constant, not a different kind of limit. A fifteen-event design has the same
+pathology.
+
+**`icc` has no default.** `icc = 0` asserts every event is independent, which
+is the assumption that inflates power more than any other, and `fill` refuses
+without one rather than warning — a warning is transient and the number it
+produced stays in the record. Registering `icc: 0` explicitly is allowed, and
+is then a claim someone made rather than a default nobody chose. V-16 requires
+the clustering unit be declared alongside it, because 0.067 within a trading
+day and 0.067 within an instrument are different claims.
+
+Both rules derive their multiple-testing threshold from the same function, kept
+honest by a parity test. Two corrections that can drift apart would be worse
+than having only one rule.
+
+Two power rules is a new degree of freedom — a researcher could pick the
+flattering one. The protocol covers it, since both are pinned before data and
+changing a registered rule is an amendment, but the freedom is real and is
+named here rather than discovered later.
 
 ## Blocks and segments
 
@@ -265,13 +308,13 @@ that is where the original one lived.
 # Run all tests
 python -m pytest tests/ -v
 
-# 578 tests. The Phase 0 core:
+# 606 tests. The Phase 0 core:
 #   C-1…C-5:  Canonical serialization (byte-stability)
 #   H-1…H-4:  Hash chain (construction + tamper detection)
 #   B-1…B-9:  Block registry (consumption, seams, promotion, and the
 #             segment/consumption agreement checks)
 #   L-1…L-5:  Ledger (dedup, maintenance, per-universe, overlap, write timing)
-#   V-1…V-15: Validation (all schema checks)
+#   V-1…V-16: Validation (all schema checks)
 #   S-1:      Structure (import direction enforcement)
 #   S-2:      No unwired public functions — the recurring defect is never a
 #             wrong component, it is an unconnected one
