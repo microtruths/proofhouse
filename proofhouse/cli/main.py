@@ -576,6 +576,46 @@ def fill(entry_id, field):
 
 
 @cli.command()
+@click.argument("entry_id")
+@click.argument("amended_file")
+@click.option("--rationale", required=True, help="Why this change.")
+@click.option("--impact", required=True,
+              help="What it changes about how the result may be read.")
+def amend(entry_id, amended_file, rationale, impact):
+    """File an amendment: record and successor entry, together or not at all."""
+    from proofhouse.core.amend import AmendmentRefused, file_amendment
+
+    root = _get_root()
+    with open(amended_file) as fh:
+        amended = yaml.safe_load(fh)
+
+    try:
+        registered, record = file_amendment(
+            registry=_registry(root),
+            amendment_log=_amendment_log(root),
+            entry_id=entry_id,
+            amended_entry=amended,
+            rationale=rationale,
+            impact=impact,
+            ledger_anchor=_last_run_id(_ledger(root)),
+        )
+    except (AmendmentRefused, ValidationError, ValueError) as exc:
+        raise click.ClickException(str(exc))
+
+    click.echo("{} amends {}".format(registered["id"], entry_id))
+    click.echo("  amendment: {} (#{})".format(
+        record["amendment_id"], record["number"]))
+    for change in record["diff"]:
+        click.echo("    {}: {!r} -> {!r}".format(
+            change["field"], change["before"], change["after"]))
+    if record["invalidating"]:
+        click.echo(
+            "  INVALIDATING: this change invalidates the pre-registration. "
+            "The successor validates on blocks the parent did not use.")
+    click.echo("  anchored at: {}".format(record["ledger_anchor"]))
+
+
+@cli.command()
 @click.option("--idea", required=True, help="What was considered.")
 @click.option("--reason", required=True, help="Why it was rejected.")
 @click.option("--entry-id", default=None, help="Related entry, if any.")

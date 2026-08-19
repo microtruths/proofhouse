@@ -87,10 +87,18 @@ def diff_entries(before, after, _prefix=""):
     before = before if isinstance(before, dict) else {}
     after = after if isinstance(after, dict) else {}
 
-    # Chain bookkeeping is not a semantic change — every amendment rewrites
-    # the hash by construction, so including it would make every diff noisy
-    # and bury the field that actually moved.
-    ignored = {"hash", "prev", "status", "amendments"}
+    # Chain and successor bookkeeping are not semantic changes.
+    #
+    # hash/prev/status/amendments: every amendment rewrites these by
+    # construction, so including them makes every diff noisy and buries the
+    # field that actually moved.
+    #
+    # id/depends_on: these are what make a record a SUCCESSOR, not what
+    # changed about the hypothesis, and they are already stated by the
+    # amendment record itself. Including them was worse than noise — a
+    # successor always differs in both, so the empty-diff guard could never
+    # fire and a no-op amendment would sail through it.
+    ignored = {"hash", "prev", "status", "amendments", "id", "depends_on"}
 
     for key in sorted(set(before) | set(after)):
         if not _prefix and key in ignored:
@@ -292,6 +300,100 @@ class RejectedIdeasLog(_ChainedLog):
         }
         self._next += 1
         return self._write_and_chain(row)
+
+
+class AmendmentRefused(Exception):
+    """The amendment cannot be filed. Neither half is written."""
+
+
+def file_amendment(registry, amendment_log, entry_id, amended_entry,
+                   rationale, impact, ledger_anchor=None):
+    """File an amendment record AND register its successor entry, atomically.
+
+    DECISION §6.1(a). Two representations of an amendment existed and did not
+    agree:
+
+      * the registry's — a NEW ENTRY carrying `depends_on`, which is what
+        enforces that an invalidating amendment (polarity,
+        expected_effect_size) validates on blocks its parent did not use;
+      * AmendmentLog's — a RECORD carrying the diff, rationale, impact and
+        anchor, which is what makes the change auditable and orderable.
+
+    They are two halves of one event, not alternatives. Writing either alone
+    leaves the gap where they drift: an amendment filed with no successor, or
+    a successor registered with no stated reason. So this writes both or
+    neither.
+
+    ORDER MATTERS. The successor is registered FIRST, because registration is
+    the half that can legitimately refuse — it runs V1-V15, E1-E6 and the
+    fresh-block requirement for invalidating amendments. Filing the record
+    first would leave a governance record describing a change that was then
+    rejected, which is worse than no record: it reads as though the change
+    happened.
+
+    Args:
+        registry: Registry instance.
+        amendment_log: AmendmentLog instance.
+        entry_id: The entry being amended (the parent).
+        amended_entry: The successor entry dict. Must carry its own new `id`
+            and list `entry_id` in `depends_on`.
+        rationale: WHY. Required.
+        impact: What this changes about the result's interpretation. Required.
+        ledger_anchor: run_id of the last ledger row at filing time.
+
+    Returns:
+        (registered_successor, amendment_record)
+
+    Raises:
+        AmendmentRefused: The successor does not name its parent, or is not a
+            distinct entry.
+        ValidationError: The successor does not validate. Nothing is written.
+        ValueError: Empty rationale, impact, or diff.
+    """
+    try:
+        parent = registry.get_entry(entry_id)
+    except KeyError:
+        raise AmendmentRefused(
+            "Cannot amend {}: no such entry.".format(entry_id))
+
+    successor_id = (amended_entry or {}).get("id")
+    if not successor_id or successor_id == entry_id:
+        raise AmendmentRefused(
+            "An amendment registers a SUCCESSOR entry with its own id; {!r} "
+            "would overwrite the parent. Registry entries are chained across "
+            "files by prev -> hash, so editing one in place orphans every "
+            "later entry pointing at it.".format(successor_id)
+        )
+
+    if entry_id not in (amended_entry.get("depends_on") or []):
+        raise AmendmentRefused(
+            "Successor {} must list {} in depends_on. That link is what makes "
+            "the registry enforce fresh blocks for an invalidating amendment "
+            "— without it the successor reads as an unrelated "
+            "hypothesis.".format(successor_id, entry_id)
+        )
+
+    # Refuse an empty diff BEFORE registering, so a no-op amendment does not
+    # leave a registered successor behind after the record is rejected.
+    if not diff_entries(parent, amended_entry):
+        raise ValueError(
+            "Amendment for {} has an empty diff — nothing changed.".format(
+                entry_id)
+        )
+
+    # Registration first: it is the half that can legitimately refuse.
+    registered = registry.register(amended_entry)
+
+    record = amendment_log.file(
+        entry_id=entry_id,
+        before=parent,
+        after=registered,
+        rationale=rationale,
+        impact=impact,
+        ledger_anchor=ledger_anchor,
+        invalidating=bool(registered.get("amendments")),
+    )
+    return registered, record
 
 
 class RerunRefused(Exception):
