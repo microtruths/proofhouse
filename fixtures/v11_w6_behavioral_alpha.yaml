@@ -1,0 +1,194 @@
+# v11 Behavioral Alpha — retro-filed fixture (W6 state)
+#
+# Source: V11_PRE_REGISTRATION_LOCKED.md §1.7 / Registration 5, and
+# AMENDMENT_A12_EARLY_RESOLUTION.md §A12.2.
+#
+# The first fixture with a MULTI-CRITERION gate, per-criterion statistics, and
+# a genuinely derived threshold. Both earlier fixtures are single-criterion
+# "g1", so the combination parser, the derived-threshold path and the
+# foreclosure advisory had never run against a registered entry — only against
+# entries synthesized inside tests.
+#
+# RECORDED OUTCOME (W6_VALIDATION_RESULTS.md, executed 2026-07-30):
+#   S2 gross (Construct C) = -10,729 bps over the 61-day test period
+#   Gate 1 (S2 > S1)          FAIL   — S1 = +15,958
+#   Gate 2 (median S2 > 0)    FAIL
+#   Gate 3 (median S2 >= T)   FAIL
+#
+# THE 0.25 bps DIVERGENCE, RECORDED BEFORE THE RUN.
+# Registration 5 derives T as:
+#     sigma_dev = median(11223, 21273, 60604, 874630) = 40,939 bps
+#     T         = 0.5 * 40,939 = 20,469 bps
+# The median of four values is the mean of the middle pair:
+#     (21273 + 60604) / 2 = 40,938.5   ->   T = 20,469.25
+# The record rounds to whole bps. proofhouse computes 20469.25 and does NOT
+# round, because the engine's promise is that it renders the comparison and
+# nothing else. The difference cannot move the W6 verdict (-10,729 is nowhere
+# near either value), but under strict comparison it is exactly the class of
+# difference that could — so it is written down here, before the run, rather
+# than explained afterwards.
+#
+# WHAT THIS FIXTURE CANNOT DO. power_check stays pending and cannot be
+# filled: proofhouse's power rule is Sharpe-denominated and v11 registered a
+# threshold in bps, so no effect_size exists to supply. `proofhouse fill`
+# refuses rather than inventing one. That refusal is the correct behaviour and
+# a real finding about the tool meeting a real registration, not a gap in the
+# fixture.
+
+schema_version: 1
+id: H-2026-V11W6
+created_utc: "2026-07-22T00:00:00Z"
+status: registered
+depends_on: []
+
+mechanism:
+  class: selection-rule
+  counterparty: >-
+    Retail wallets that hold losing positions through adverse moves. Their
+    realized losses are the source of the gross alpha a copy-trader captures
+    by selecting against them; the behavioral composite is the selection rule
+    that identifies them.
+  claim: >-
+    A 25-wallet cohort selected by the v10 as-built behavioral composite
+    generates positive median-window gross alpha across three validation
+    windows, measured by the walk-forward simulator under Construct C.
+  # v11 registered its effect size in bps, not in Sharpe units. Recorded as
+  # prose rather than a number because the power rule cannot consume it —
+  # see the header note.
+  expected_effect_size: >-
+    Median-window gross alpha >= 20,469 bps (T, derived in Registration 5).
+    Not Sharpe-denominated.
+  expected_decay: >-
+    Unknown. The composite relies on persistent behavioral traits. W6's zero
+    marked-trade rate suggests holding periods shortened in the May-Jun 2026
+    regime, which would decay the mechanism within one cohort window.
+
+signal:
+  inputs: [wallet_fills, behavioral_composite_as_built]
+  transform: >-
+    Rank the shared universe by the v10 AS-BUILT behavioral composite, select
+    top 25 after dedup. The as-built variant is registered deliberately: it
+    differs from Raymond's replicate_behavioral_ic.py on payoff_ratio and
+    disposition_ratio polarity, and harmonizing them mid-cycle would create a
+    third variant requiring new registration (failure catalog #26).
+  frequency: per-window (2-month validation windows)
+  parameters:
+    cohort_size: 25
+    composite_variant: as-built
+    construct: C
+
+universe:
+  id: hl-perps-wallets
+  venues: [hyperliquid]
+  instruments: >-
+    shared_universe — 4,049 wallets meeting the activity floor in the
+    training window, across all perpetual instruments.
+
+feasibility:
+  min_order_notional_usd: "10"
+  sleeve_range: ["2000", "20000"]
+  instruments_held: 25
+  rebalance_band: "0.15"
+
+costs:
+  model_ref: costs/hl-taker-v1
+
+gate:
+  # Default statistic; g1 overrides it with its own.
+  statistic: s2_median_gross_bps
+
+  # PINNED BY A-12 §A12.2. §1.7 listed three criteria and never stated a
+  # combination rule. A-12 records the conjunction reading as load-bearing:
+  # the early-resolution proof in §A12.3 is sound ONLY under conjunction.
+  # "Resolved 2026-08-06: the researcher confirmed AND-conjunction."
+  combination: "g1 and g2 and g3"
+
+  criteria:
+    # Gate 1 — S2 beats S1 in at least 2 of 3 windows. A win COUNT, which is
+    # why this criterion carries its own statistic.
+    g1:
+      statistic: s2_beats_s1_windows
+      comparator: ">="
+      threshold:
+        literal: "2"
+
+    # Gate 2 — median gross alpha strictly above zero. Registration notes this
+    # is subsumed by Gate 3 (T > 0 by construction) and retained as
+    # belt-and-suspenders; a redundant condition in an AND-chain is harmless.
+    g2:
+      comparator: ">"
+      threshold:
+        literal: "0"
+
+    # Gate 3 — the binding effect-size floor. T is DERIVED, not literal:
+    # Registration 5 pinned a formula, so reproducing the formula is the
+    # faithful reproduction.
+    #
+    # Source blocks are the DEV windows W2-W5. They are not validation
+    # segment, so E2's anti-circularity check passes for the right reason
+    # rather than vacuously — v11 Registration 5: "do not re-derive T from
+    # validation data (that would be fitting the threshold to the data it
+    # polices)."
+    g3:
+      comparator: ">="
+      threshold:
+        derived:
+          formula: "0.5 * median(sigma_w)"
+          source_blocks: [W2, W3, W4, W5]
+
+  benchmark: s1-alpha-ranked-cohort
+  benchmark_justification: >-
+    S1 is the alpha-ranked cohort drawn from the same shared universe with the
+    same cohort size and construct. It isolates the behavioral composite's
+    contribution: if S2 cannot beat S1, the composite adds nothing over
+    ranking on realized alpha directly. Gate 1 is this comparison.
+  benchmark_sensitivity:
+    - s0-broad-pool
+    - s6-sign-randomized
+  on_pass: promote-to-shadow-trial
+  on_fail: >-
+    Close the cycle FAIL. Register revised hypotheses against future windows
+    only (temporal embargo). Do not retest the composite on W6-W8.
+
+p_value_sidedness: one-sided
+fdr_method: by
+fdr_method_justification: >-
+  S0, S1, S2 and S6 are evaluated on one shared universe over the same
+  windows and are therefore strongly dependent; positive regression
+  dependence cannot be assumed.
+
+pass_licenses: >-
+  A shadow trial on the live sleeve for 6 weeks with real fills.
+pass_does_not_establish: >-
+  Net-of-cost profitability, or that the behavioral composite ranks within
+  the wallets it admits.
+
+live_gate:
+  min_duration_weeks: 6
+
+# W6, W7, W8. W6 executed 2026-07-30; A-12 registered the rule under which
+# W8 executes only if W7 clears both foreclosable gates.
+validation_blocks: [W6, W7, W8]
+seam_acknowledged: false
+
+diagnostics:
+  - name: marked_trade_rate
+    trigger: "0% or >80% → written caveat"
+  - name: b_minus_c_divergence
+    trigger: ">5000 bps → written caveat"
+  - name: fallback_fill_rate
+    trigger: ">0.05 → written caveat"
+
+power_check:
+  inputs:
+    blocks: 3
+    prior_trials: 4
+  value:
+    pending: true
+    fill_rule: "power(effect_size, blocks, prior_trials)"
+
+prior_art:
+  - v10 descriptive showing — S2 above the null median in 4/4 windows
+    (57.6 / 68.7 / 63.9 / 54.1 percentile), binomial p ~ 0.06. Suggestive,
+    not significant, and measured on Raymond's composite rather than the
+    as-built one registered here.
