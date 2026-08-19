@@ -176,6 +176,27 @@ def _non_claims(entry, verdict):
         claims.append(
             "Criteria {} were infeasible (no usable statistic) and count as "
             "losses, not as absent evidence.".format(sorted(infeasible)))
+    # THE COMPENSATING READER for allowing an amendment to reuse blocks its
+    # lineage never spent.
+    #
+    # Before that change an invalidating amendment cost FRESH BLOCKS, and
+    # blocks are the scarce resource — on a 19-block corpus you get three or
+    # four before running out. Afterwards it costs nothing on an ungated
+    # entry, so a resource-limited search became an unlimited one. The count
+    # was already in the record and nothing read it.
+    #
+    # One number and one sentence, deliberately. Whether repeated amendment
+    # should DEFLATE the threshold the way exploration runs do is a real
+    # question and a separate one; the amendment log holds what such a rule
+    # would need.
+    revisions = len(entry.get("amendments") or [])
+    if revisions:
+        claims.append(
+            "This is revision {} of a pre-registration whose effect size or "
+            "direction changed after the original was filed. Each such "
+            "revision is a fork in the path, and the trial count does not "
+            "currently charge for it.".format(revisions))
+
     power = (entry.get("power_check") or {}).get("value", {})
     if power.get("flagged"):
         claims.append(

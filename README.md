@@ -186,6 +186,35 @@ Deliberately allowed: replay with no intervening amendment, and re-running on
 blocks the pre-amendment gate never touched. A lock that blocks legitimate
 re-runs gets routed around, which is worse than no lock.
 
+### "Fresh blocks" means unspent, not undeclared
+
+Two changes — to `expected_effect_size` and to `signal.parameters.polarity` —
+invalidate a pre-registration, and the amended entry must validate on blocks
+its lineage did not use. That rule is enforced against **consumption**, not
+against declarations.
+
+`validation_blocks` states intent at registration; blocks are consumed later,
+at gate time. Comparing the two declared lists could not tell a
+named-but-untouched block from a spent one, so an entry amended before it ever
+gated was pushed onto different blocks — spending *more* data to protect blocks
+that were already clean. Consumption is checked across the whole ancestor
+chain, so an intermediate amendment cannot launder a block its grandparent
+spent.
+
+A permitted reuse is a weaker isolation claim than a fresh block, and the
+amendment note records which of the two it was. Two things follow that are
+worth knowing:
+
+- **Verify reports contested blocks.** If two live entries declare the same V
+  block and neither has spent it, whichever gates first takes it and the other
+  becomes permanently unrunnable — E4 makes V single-use. That is a warning
+  while the blocks are unspent and an error once they are not, because nothing
+  in the schema marks an entry as superseded.
+- **An invalidating amendment on an ungated entry is now free**, where it used
+  to cost scarce blocks. The report states the revision count for this reason.
+  Whether repeated amendment should deflate the threshold the way exploration
+  runs do is a real question and an open one.
+
 ## Power
 
 At registration, proofhouse asks whether the design could detect its own
@@ -299,6 +328,8 @@ verifies clean at the chain level while being wrong:
 - a locked document citing a catalog entry that was never written
 - a validation window that had already concluded when the entry was registered
 - a block labelled *untouched* sitting beside a list of things that touched it
+- an entry whose validation blocks something else already spent, so it can
+  never be gated and will not find out until it tries
 
 The last one is a distinction worth naming. An **embargo** means the window had
 not finished at registration, so peeking was impossible and the claim rests on
@@ -325,7 +356,7 @@ that is where the original one lived.
 # Run all tests
 python -m pytest tests/ -v
 
-# 618 tests. The Phase 0 core:
+# 634 tests. The Phase 0 core:
 #   C-1…C-5:  Canonical serialization (byte-stability)
 #   H-1…H-4:  Hash chain (construction + tamper detection)
 #   B-1…B-9:  Block registry (consumption, seams, promotion, and the

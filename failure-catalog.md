@@ -79,6 +79,14 @@ Errors were made by every participant: the human's plan drafts, the primary revi
 > within-cluster correlation) and `"inf"` being written into a hashed record as a power
 > derivation's cap. The audit of a fix found more than the audit that produced it.
 
+| **30** | **The fresh-block rule was enforced against declarations rather than consumption — wrong in both directions at once.** An invalidating amendment must validate on blocks its lineage did not use. The check compared two `validation_blocks` lists, which state *intent* at registration, and never read `consumed_by`, which records what was actually *spent* at gate time. **Too strict:** H-2026-PFR1 was amended the same day it was registered, with all six validation blocks `consumed_by: []` and `manifests/` empty. The amendment was refused, and the only compliant route was to spend four *different* blocks to protect six that were already clean — more data consumed for less isolation. **Too loose:** the loop compared only against immediate parents, so `A → B → C` let C reuse a block A had spent, because C's list overlapped A's and only B was ever examined. One intermediate amendment laundered it. | Phase 0 `registry.py`, carried through Phases 1–2 | Probing the check against the live registry after a research-side spec proposed the fix; the transitive hole was found by asking what the one-level loop could not see | **A check is only as good as the evidence it reads.** `Registry` already held `self._block_registry` — the fact was one attribute away from the code ignoring it, exactly as in #28. Note also the shape of the compensating cost: the fix makes an invalidating amendment on an ungated entry FREE where it used to cost scarce blocks, converting a resource-limited search into an unlimited one. Loosening a constraint on correct grounds can still remove the only thing that was pricing an abuse, and the replacement price has to be named. |
+
+> **Entry #30 provenance.** Fixed 2026-08-19. A pre-existing test named
+> `test_a_polarity_change_reusing_parent_blocks_is_refused` documented "a consumed validation
+> window" in its docstring and never consumed anything — it had been passing against the
+> declaration-only check for the wrong reason, and only failed once the check started reading
+> consumption. **A test can encode the bug it was written to prevent.**
+
 ## Process lessons (meta)
 
 - **Review the diff AND the whole.** Several errors (#17, stale "200 draws" counts, a rejected-suggestion entry contradicting an adopted rule) were merge debris invisible to diff-only review.

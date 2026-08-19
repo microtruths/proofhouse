@@ -47,13 +47,14 @@ def _blocks():
 @pytest.fixture
 def setup():
     root = tempfile.mkdtemp()
+    blocks = _blocks()
     registry = Registry(os.path.join(root, "registry"),
-                        block_registry=_blocks())
+                        block_registry=blocks)
     log = AmendmentLog(os.path.join(root, "amendments.jsonl"))
     with open(FIXTURE) as fh:
         parent = yaml.safe_load(fh)
     registry.register(copy.deepcopy(parent))
-    return registry, log, parent
+    return registry, log, parent, blocks
 
 
 def _successor(parent, entry_id="H-2026-AC10-A1", **changes):
@@ -69,7 +70,7 @@ def _successor(parent, entry_id="H-2026-AC10-A1", **changes):
 
 class TestBothHalvesOrNeither:
     def test_a_valid_amendment_writes_both(self, setup):
-        registry, log, parent = setup
+        registry, log, parent, blocks = setup
         successor = _successor(parent)
         successor["gate"]["criteria"]["g1"]["threshold"]["literal"] = "0.04"
 
@@ -93,7 +94,7 @@ class TestBothHalvesOrNeither:
         legitimately refuse. Filing the record first would leave a governance
         record describing a change that was then rejected — worse than no
         record, because it reads as though the change happened."""
-        registry, log, parent = setup
+        registry, log, parent, blocks = setup
         successor = _successor(parent)
         del successor["gate"]["combination"]        # E1/V-3
 
@@ -108,7 +109,7 @@ class TestBothHalvesOrNeither:
     def test_an_empty_diff_writes_neither(self, setup):
         """Refused BEFORE registering, so a no-op amendment cannot leave a
         registered successor behind after the record is rejected."""
-        registry, log, parent = setup
+        registry, log, parent, blocks = setup
         successor = _successor(parent)
         successor["depends_on"] = [parent["id"]]
 
@@ -121,7 +122,7 @@ class TestBothHalvesOrNeither:
             registry.get_entry("H-2026-AC10-A1")
 
     def test_missing_rationale_writes_neither(self, setup):
-        registry, log, parent = setup
+        registry, log, parent, blocks = setup
         successor = _successor(parent, id="H-X")
         successor["gate"]["criteria"]["g1"]["threshold"]["literal"] = "0.04"
 
@@ -135,7 +136,7 @@ class TestSuccessorDiscipline:
     def test_overwriting_the_parent_is_refused(self, setup):
         """Registry entries are chained across files by prev -> hash, so
         editing one in place orphans every later entry pointing at it."""
-        registry, log, parent = setup
+        registry, log, parent, blocks = setup
         successor = _successor(parent, id=parent["id"])
 
         with pytest.raises(AmendmentRefused) as exc:
@@ -147,7 +148,7 @@ class TestSuccessorDiscipline:
         """The depends_on link is what makes the registry enforce fresh blocks
         for an invalidating amendment. Without it the successor reads as an
         unrelated hypothesis."""
-        registry, log, parent = setup
+        registry, log, parent, blocks = setup
         successor = _successor(parent)
         successor["depends_on"] = []
         successor["gate"]["criteria"]["g1"]["threshold"]["literal"] = "0.04"
@@ -158,7 +159,7 @@ class TestSuccessorDiscipline:
         assert "depends_on" in str(exc.value)
 
     def test_amending_an_unknown_entry_is_refused(self, setup):
-        registry, log, parent = setup
+        registry, log, parent, blocks = setup
         with pytest.raises(AmendmentRefused):
             file_amendment(registry, log, "H-NOPE", _successor(parent),
                            rationale="r", impact="i")
@@ -172,7 +173,7 @@ class TestInvalidatingAmendments:
         fixed before the data was seen. A post-hoc flip on the same window
         would silently convert every one-sided test into a two-sided one at
         half the stated p-value."""
-        registry, log, parent = setup
+        registry, log, parent, blocks = setup
 
         # Give the parent a consumed validation window to collide with.
         parent_with_blocks = copy.deepcopy(parent)
@@ -182,6 +183,10 @@ class TestInvalidatingAmendments:
         parent_with_blocks.pop("hash", None)
         parent_with_blocks.pop("prev", None)
         registry.register(parent_with_blocks)
+        # ACTUALLY consume it. This test's docstring always said "a consumed
+        # validation window" and the setup never consumed anything, so it
+        # passed against the old declaration-only check for the wrong reason.
+        blocks.consume_block("B-V-01", "H-POL")
 
         successor = _successor(parent_with_blocks, id="H-POL-A1")
         successor["validation_blocks"] = ["B-V-01"]        # same window
@@ -195,7 +200,7 @@ class TestInvalidatingAmendments:
         assert log.for_entry("H-POL") == []
 
     def test_a_polarity_change_on_fresh_blocks_is_allowed_and_flagged(self, setup):
-        registry, log, parent = setup
+        registry, log, parent, blocks = setup
 
         parent_with_blocks = copy.deepcopy(parent)
         parent_with_blocks["id"] = "H-POL2"
@@ -221,7 +226,7 @@ class TestInvalidatingAmendments:
 
 class TestNumberingAndChain:
     def test_a_second_amendment_numbers_from_the_parent(self, setup):
-        registry, log, parent = setup
+        registry, log, parent, blocks = setup
 
         first = _successor(parent, id="H-A1")
         first["gate"]["criteria"]["g1"]["threshold"]["literal"] = "0.04"
@@ -237,7 +242,7 @@ class TestNumberingAndChain:
         assert log.verify()[0]
 
     def test_the_diff_names_the_field_that_moved(self, setup):
-        registry, log, parent = setup
+        registry, log, parent, blocks = setup
         successor = _successor(parent)
         successor["gate"]["criteria"]["g1"]["threshold"]["literal"] = "0.04"
 

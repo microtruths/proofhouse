@@ -353,3 +353,33 @@ class TestThePowerDerivationIsActuallyRendered:
         claims = " ".join(report["non_claims"])
         assert "power below 0.5" in claims
         assert "more events stop buying power" in claims
+
+
+class TestTheLineageRevisionCount:
+    """The compensating reader for permitting block reuse.
+
+    Before that change an invalidating amendment cost fresh blocks, and
+    blocks are the scarce resource. Afterwards it costs nothing on an
+    ungated entry, so a resource-limited search became an unlimited one.
+    The count sat in the record and nothing read it.
+    """
+
+    def test_a_revised_registration_says_so(self, w6):
+        entry, verdict = w6
+        entry = dict(entry)
+        entry["amendments"] = [
+            {"field": "expected_effect_size", "parent_id": "H-A"},
+            {"field": "signal.parameters.polarity", "parent_id": "H-B"},
+        ]
+
+        report = build_report(entry, verdict)
+        claims = " ".join(report["non_claims"])
+
+        assert "revision 2" in claims
+        assert "does not currently charge" in claims
+
+    def test_an_original_registration_says_nothing(self, w6):
+        entry, verdict = w6
+        report = build_report(entry, verdict)
+
+        assert "revision" not in " ".join(report["non_claims"])

@@ -37,7 +37,7 @@ class Finding:
 
     Attributes:
         check: Which check produced it ('chain', 'schema', 'blocks',
-            'temporal', 'ordering', 'references').
+            'runnable', 'temporal', 'ordering', 'references').
         severity: 'error' or 'warning'. Errors fail the verify.
         where: The record the problem is in.
         message: What is wrong.
@@ -106,6 +106,7 @@ def verify_all(registry=None, ledger=None, amendment_log=None,
 
     _check_schema(entries, block_registry, findings)
     _check_blocks(block_registry, findings)
+    _check_runnable(entries, block_registry, findings)
     _check_temporal(entries, block_registry, findings)
     _check_references(entries, by_id, ledger, amendment_log, fill_log,
                       citation_resolver, findings)
@@ -206,6 +207,76 @@ def _check_blocks(block_registry, findings):
                     ack.get("from_segment"), block.get("segment"),
                     ", ".join(ack.get("prior_consumption") or []),
                     ack.get("rationale"))))
+
+
+def _check_runnable(entries, block_registry, findings):
+    """An entry that can never gate should say so before you try.
+
+    Allowing an amendment to reuse blocks its lineage never spent creates a
+    time-of-check/time-of-use gap. Both entries declare the same V blocks;
+    whichever gates first consumes them; E4 then refuses the other forever.
+    Soundness holds — E4 is the backstop — but the tool would let you
+    register something it will later refuse to run and say nothing at the
+    moment the choice is still open.
+
+    There is no supersession concept in the schema: `status` is always
+    "registered", so nothing marks a parent as retired. Until there is, this
+    is how "which of these two is the live one?" gets answered by something
+    other than a person's memory.
+
+    Two findings, and the warning is the error's early form:
+
+      error   — a declared V block is already spent by a DIFFERENT entry, so
+                this one cannot gate at all
+      warning — several live entries declare the same V block and none has
+                spent it yet; the first to gate takes it
+
+    The warning self-clears when one of them gates, which is what keeps it
+    from becoming an alarm nobody hears.
+    """
+    if block_registry is None:
+        return
+
+    claimants = {}
+    for entry in entries:
+        entry_id = entry.get("id", "?")
+        for block_id in entry.get("validation_blocks") or []:
+            claimants.setdefault(block_id, []).append(entry_id)
+
+            try:
+                block = block_registry.get_block(block_id)
+            except KeyError:
+                continue        # V-8 / E6 territory, not this check's
+            if block.get("segment") not in ("V",):
+                continue
+            spenders = [c.get("entry_id")
+                        for c in block.get("consumed_by") or []
+                        if c.get("entry_id") != entry_id]
+            if spenders:
+                findings.append(Finding(
+                    "runnable", "error", entry_id,
+                    "declares validation block {}, which entry {} has "
+                    "already spent. E4 makes V-blocks single-use, so this "
+                    "entry can never be gated on it — the refusal is "
+                    "guaranteed and arrives only when you try.".format(
+                        block_id, ", ".join(sorted(set(spenders))))))
+
+    for block_id in sorted(claimants):
+        entry_ids = sorted(set(claimants[block_id]))
+        if len(entry_ids) < 2:
+            continue
+        try:
+            block = block_registry.get_block(block_id)
+        except KeyError:
+            continue
+        if block.get("segment") != "V" or block.get("consumed_by"):
+            continue        # already spent — reported as an error above
+        findings.append(Finding(
+            "runnable", "warning", block_id,
+            "claimed as a validation block by {} entries ({}), and spent by "
+            "none of them. Whichever gates first takes it and the others "
+            "become unrunnable. Nothing in the record says which is the live "
+            "one.".format(len(entry_ids), ", ".join(entry_ids))))
 
 
 def _check_temporal(entries, block_registry, findings):

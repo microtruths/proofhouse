@@ -331,15 +331,15 @@ class TestTheResolverAgainstTheRealCatalog:
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "failure-catalog.md")
 
-    def test_the_real_catalog_parses_to_29(self):
+    def test_the_real_catalog_parses_to_30(self):
         """Pinned to the real catalog's highest entry.
 
         Bump this when a catalog entry lands — the test failing on a new
-        entry is the pin working, not a regression. #29 landed 2026-08-19.
+        entry is the pin working, not a regression. #30 landed 2026-08-19.
         """
         resolver = catalog_citation_resolver(self.CATALOG)
         assert resolver is not None
-        assert resolver.highest == 29
+        assert resolver.highest == 30
 
     def test_emphasized_row_numbers_are_read(self):
         """'| **27** |' is the format that broke it."""
@@ -591,3 +591,98 @@ class TestBlockSegmentsAgreeWithConsumption:
                     if f.check == "blocks" and f.severity == "warning"]
         assert len(warnings) == 1
         assert "exploration only" in warnings[0].message
+
+
+class TestAnEntryThatCanNeverGateSaysSo:
+    """The time-of-check/time-of-use gap opened by permitting block reuse.
+
+    Two entries declare the same V blocks; whichever gates first consumes
+    them; E4 refuses the other forever. Soundness holds — E4 is the backstop
+    — but without this the tool lets you register something it will later
+    refuse to run, and says nothing while the choice is still open.
+
+    There is no supersession concept: `status` is always "registered", so
+    nothing marks a parent as retired.
+    """
+
+    def _blocks(self):
+        registry = BlockRegistry()
+        for name in ("B1", "B2"):
+            registry.add_block({
+                "id": name, "start": "2026-01-01", "end": "2026-03-01",
+                "segment": "V", "data_complete": True,
+                "completed_at": "2026-03-15", "sources": ["hl"], "seams": [],
+            })
+        return registry
+
+    def _entry(self, entry_id, vblocks):
+        return {"id": entry_id, "schema_version": 1,
+                "created_utc": "2026-08-19T00:00:00Z",
+                "validation_blocks": list(vblocks)}
+
+    def test_a_spent_block_makes_the_other_entry_unrunnable(self):
+        blocks = self._blocks()
+        blocks.consume_block("B1", "H-FIRST")
+
+        ok, findings = verify_all(
+            registry=_StubRegistry([self._entry("H-SECOND", ["B1"])]),
+            block_registry=blocks)
+
+        assert ok is False
+        errors = _errors(findings, "runnable")
+        assert len(errors) == 1
+        assert "H-FIRST" in errors[0].message
+        assert "can never be gated" in errors[0].message
+
+    def test_the_entry_that_spent_it_is_not_reported(self):
+        blocks = self._blocks()
+        blocks.consume_block("B1", "H-FIRST")
+
+        ok, findings = verify_all(
+            registry=_StubRegistry([self._entry("H-FIRST", ["B1"])]),
+            block_registry=blocks)
+
+        assert not [f for f in findings if f.check == "runnable"]
+
+    def test_a_contested_unspent_block_warns_but_passes(self):
+        """The warning is the error's early form, and self-clears when one
+        of them gates — which is what stops it becoming an alarm nobody
+        hears."""
+        blocks = self._blocks()
+
+        ok, findings = verify_all(
+            registry=_StubRegistry([self._entry("H-P", ["B1", "B2"]),
+                                    self._entry("H-S", ["B1", "B2"])]),
+            block_registry=blocks)
+
+        # Scoped to this check: the stub entries are intentionally minimal
+        # and trip the schema validator, which is not what is under test.
+        warnings = [f for f in findings if f.check == "runnable"]
+        assert len(warnings) == 2        # one per contested block
+        assert all(w.severity == "warning" for w in warnings)
+        assert "H-P, H-S" in warnings[0].message
+
+    def test_one_claimant_is_not_contested(self):
+        blocks = self._blocks()
+        ok, findings = verify_all(
+            registry=_StubRegistry([self._entry("H-P", ["B1", "B2"])]),
+            block_registry=blocks)
+
+        assert not [f for f in findings if f.check == "runnable"]
+
+    def test_non_v_blocks_are_not_contested(self):
+        """Reuse is the point of E, S1 and S2. Only V is single-use."""
+        blocks = BlockRegistry()
+        blocks.add_block({
+            "id": "B-S2", "start": "2026-01-01", "end": "2026-03-01",
+            "segment": "S2", "data_complete": True,
+            "completed_at": "2026-03-15", "sources": ["hl"], "seams": [],
+        })
+        blocks.consume_block("B-S2", "H-FIRST")
+
+        ok, findings = verify_all(
+            registry=_StubRegistry([self._entry("H-A", ["B-S2"]),
+                                    self._entry("H-B", ["B-S2"])]),
+            block_registry=blocks)
+
+        assert not [f for f in findings if f.check == "runnable"]

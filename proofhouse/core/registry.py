@@ -102,6 +102,58 @@ class Registry:
         self._chain = chain
         self._entries = {e["id"]: e for e in chain}
 
+    def ancestor_ids(self, entry):
+        """Every entry this one descends from, transitively.
+
+        The invalidating-amendment rule is about a LINEAGE, not a parent: an
+        intermediate amendment must not be able to launder a block its
+        grandparent already spent.
+
+        Cycle-safe by a `seen` set as well as by construction — the registry
+        is append-only, so depends_on cannot close a loop, but a walk that
+        relies on that assumption is one schema change from hanging.
+        """
+        seen = set()
+        queue = list(entry.get("depends_on") or [])
+        while queue:
+            current = queue.pop()
+            if current in seen or current not in self._entries:
+                continue
+            seen.add(current)
+            queue.extend(self._entries[current].get("depends_on") or [])
+        return seen
+
+    def _declared_by_ancestors(self, entry):
+        """Every validation block named anywhere in this entry's lineage."""
+        declared = set()
+        for ancestor_id in self.ancestor_ids(entry):
+            declared.update(
+                self._entries[ancestor_id].get("validation_blocks") or [])
+        return declared
+
+    def _spent_by_ancestors(self, entry, block_ids):
+        """Map {block_id: consuming_ancestor} for blocks the lineage spent.
+
+        Consumption by an UNRELATED entry is a different error and E4 raises
+        it at gate time. Conflating them here would report a stranger's
+        consumption as an amendment-lineage violation, which points the
+        reader at the wrong problem.
+        """
+        ancestors = self.ancestor_ids(entry)
+        spent = {}
+        for block_id in sorted(block_ids):
+            try:
+                block = self._block_registry.get_block(block_id)
+            except KeyError:
+                # A block that is not registered cannot have been spent. The
+                # missing-block problem is E6/V-8's to report.
+                continue
+            for consumption in block.get("consumed_by") or []:
+                if consumption.get("entry_id") in ancestors:
+                    spent[block_id] = consumption["entry_id"]
+                    break
+        return spent
+
     def register(self, entry):
         """Validate, hash, chain, and persist a new entry.
 
@@ -196,25 +248,85 @@ class Registry:
                     if not result["amended"]:
                         continue
 
-                    parent_blocks = set(original.get("validation_blocks", []))
                     new_blocks = set(entry.get("validation_blocks", []))
-                    reused = parent_blocks & new_blocks
+                    # Overlap is measured against the WHOLE LINEAGE's
+                    # declarations, not the immediate parent's. Against
+                    # `original` alone, A -> B -> C computed an empty overlap
+                    # whenever B happened to declare different blocks from A,
+                    # so C could reuse anything A had spent.
+                    reused = new_blocks & self._declared_by_ancestors(entry)
 
-                    if reused:
+                    # FRESH MEANS UNSPENT, NOT UNDECLARED.
+                    #
+                    # validation_blocks states intent at registration;
+                    # consumption happens later, at gate time. Comparing the
+                    # two declared lists could not tell a named-and-untouched
+                    # block from a spent one, so an entry amended before it
+                    # ever gated was forced onto different blocks — spending
+                    # MORE data to protect blocks that were already clean.
+                    #
+                    # Ancestors are walked transitively. The one-level loop
+                    # was also a live hole in the other direction: A -> B -> C
+                    # let C reuse a block A had spent, because C's list
+                    # overlapped A's and only B was ever compared.
+                    if self._block_registry is None:
+                        # Conservative branch: absence of evidence must not
+                        # read as evidence of cleanliness. Keyed on declared
+                        # overlap, which is all there is to go on here.
+                        if reused:
+                            raise ValidationError([
+                                "{} changed from {!r} to {!r} relative to "
+                                "parent {}, which invalidates the "
+                                "pre-registration — but validation_blocks "
+                                "still reuse {}, and no block registry is "
+                                "available to check whether those blocks were "
+                                "ever spent ({}).".format(
+                                    field_name, result["original"],
+                                    result["current"], dep_id, sorted(reused),
+                                    why,
+                                )
+                            ])
+                        spent = {}
+                    else:
+                        # Checked over EVERY block this entry declares, not
+                        # only the overlapping ones: an ancestor may have
+                        # spent a block it never listed as validation (a
+                        # stage-1 read, say), and validating on that is the
+                        # same violation wearing different clothes.
+                        spent = self._spent_by_ancestors(entry, new_blocks)
+
+                    if spent:
                         raise ValidationError([
                             "{} changed from {!r} to {!r} relative to parent "
-                            "{}, which invalidates the pre-registration — but "
-                            "validation_blocks still reuse {}. An amended "
-                            "entry must validate on blocks the parent did not "
-                            "use ({}).".format(
+                            "{}, which invalidates the pre-registration — and "
+                            "validation_blocks reuse {}, already spent by {}. "
+                            "An amended entry must validate on blocks its "
+                            "lineage did not use ({}).".format(
                                 field_name,
                                 result["original"],
                                 result["current"],
                                 dep_id,
-                                sorted(reused),
+                                sorted(spent),
+                                ", ".join(sorted(set(spent.values()))),
                                 why,
                             )
                         ])
+
+                    # A permitted reuse is a WEAKER isolation claim than a
+                    # fresh block, and the record must not flatten the two.
+                    # The note used to say "validates on fresh blocks"
+                    # unconditionally, which becomes a falsehood the moment
+                    # reuse is allowed — and a later reader seeing reuse
+                    # could not tell whether it was checked or missed.
+                    if reused:
+                        isolation = (
+                            "reuses {}, verified unconsumed at registration — "
+                            "a weaker isolation claim, holding only for as "
+                            "long as nothing else spends them".format(
+                                sorted(reused))
+                        )
+                    else:
+                        isolation = "validates on fresh blocks"
 
                     entry.setdefault("amendments", [])
                     entry["amendments"].append({
@@ -222,15 +334,17 @@ class Registry:
                         "original": result["original"],
                         "current": result["current"],
                         "parent_id": dep_id,
+                        "reused_blocks": sorted(reused),
                         "note": (
                             "{} changed from {} to {} after registration of "
                             "parent {}. Pre-registration invalidated; this "
-                            "entry validates on fresh blocks ({})."
+                            "entry {} ({})."
                             .format(
                                 field_name,
                                 result["original"],
                                 result["current"],
                                 dep_id,
+                                isolation,
                                 why,
                             )
                         ),
