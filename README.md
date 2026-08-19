@@ -83,6 +83,7 @@ proofhouse status
 |---------|-------------|
 | `proofhouse init` | Create project directories and genesis records |
 | `proofhouse blocks add\|list\|complete\|promote` | Manage the block registry |
+| `proofhouse blocks acknowledge <block> <entry> --rationale` | Explain consumption a block's segment does not imply |
 | `proofhouse explore -u <universe>` | Log an exploration run (fast — <5s) |
 | `proofhouse register <file>` | Validate, hash, chain, and register a hypothesis |
 | `proofhouse fill <id> <field>` | Fill a pending field from its pinned rule. Once only |
@@ -180,6 +181,53 @@ Deliberately allowed: replay with no intervening amendment, and re-running on
 blocks the pre-amendment gate never touched. A lock that blocks legitimate
 re-runs gets routed around, which is worse than no lock.
 
+## Blocks and segments
+
+Data is spent in two-month blocks. Segments label them, least to most
+restricted:
+
+```
+E    exploration — unlimited reuse, never validates
+S1   screen A — reusable within a cycle
+S2   screen B — reusable within a cycle
+R    reserve — untouched, promoted to V on demand
+V    validation — one block per hypothesis, single-use (terminal)
+L    live — forward-collected, licenses deployment, never gates
+```
+
+A block moves up this ladder and never down. That one-way rule is what makes
+single-use validation mean anything, so it is not negotiable — but **R does not
+belong on a ladder, and the seam it creates is worth knowing about.**
+
+E, S1, S2, V and L are *permissions*: they say what a block may be used for. R
+is a *claim about the past*: it says nothing has been read from this block.
+Permissions cannot un-grant. Claims about the past can turn out to be wrong,
+and when one does, a monotone ladder has no way to record it.
+
+So `R` reads as **sealed unless a note says otherwise**. When a reserve block
+turns out to have been read, the segment stays and an explanation attaches:
+
+```bash
+proofhouse blocks acknowledge B-2026-03 H-2026-ACCOHORT --rationale "..."
+```
+
+`verify` errors on consumption no note covers, and clears once one does. The
+note names the entry it covers, so a later reader re-raises the error rather
+than inheriting the clearance — a blanket "acknowledged" would pre-clear every
+future reading of the block.
+
+The reason it is prose and not a `contaminated` flag: contamination is not
+global. Data read by a wallet-selection study is genuinely spent for the next
+wallet-selection study and holdout-grade at best for an unrelated family. A
+boolean over-refuses one case and under-informs the other; only a sentence can
+say which.
+
+Promotion **to V** consults `consumed_by`, because promoting is the act of
+claiming a block is unexamined validation data. Crossing a block that has been
+read requires an explicit acknowledgment and a written reason — the same shape
+as the seam rule (#12) — and the refusal reads any recorded note back to you at
+the moment you try to spend it.
+
 ## Verify
 
 Hash chains prove nobody edited a record after writing it. They prove nothing
@@ -190,6 +238,7 @@ verifies clean at the chain level while being wrong:
 - a gate run against a version whose amendment was not yet filed
 - a locked document citing a catalog entry that was never written
 - a validation window that had already concluded when the entry was registered
+- a block labelled *untouched* sitting beside a list of things that touched it
 
 The last one is a distinction worth naming. An **embargo** means the window had
 not finished at registration, so peeking was impossible and the claim rests on
@@ -216,10 +265,11 @@ that is where the original one lived.
 # Run all tests
 python -m pytest tests/ -v
 
-# 560 tests. The Phase 0 core:
+# 578 tests. The Phase 0 core:
 #   C-1…C-5:  Canonical serialization (byte-stability)
 #   H-1…H-4:  Hash chain (construction + tamper detection)
-#   B-1…B-4:  Block registry (consumption, seams, promotion)
+#   B-1…B-9:  Block registry (consumption, seams, promotion, and the
+#             segment/consumption agreement checks)
 #   L-1…L-5:  Ledger (dedup, maintenance, per-universe, overlap, write timing)
 #   V-1…V-15: Validation (all schema checks)
 #   S-1:      Structure (import direction enforcement)

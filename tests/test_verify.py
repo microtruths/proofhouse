@@ -331,10 +331,15 @@ class TestTheResolverAgainstTheRealCatalog:
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "failure-catalog.md")
 
-    def test_the_real_catalog_parses_to_27(self):
+    def test_the_real_catalog_parses_to_28(self):
+        """Pinned to the real catalog's highest entry.
+
+        Bump this when a catalog entry lands — the test failing on a new
+        entry is the pin working, not a regression. #28 landed 2026-08-19.
+        """
         resolver = catalog_citation_resolver(self.CATALOG)
         assert resolver is not None
-        assert resolver.highest == 27
+        assert resolver.highest == 28
 
     def test_emphasized_row_numbers_are_read(self):
         """'| **27** |' is the format that broke it."""
@@ -384,3 +389,166 @@ class TestCitationsAreCheckedInProseNotJustPriorArt:
             registry=registry, block_registry=_blocks(),
             citation_resolver=catalog_citation_resolver(self._catalog(25)))
         assert ok, [str(f) for f in findings]
+
+
+class TestBlockSegmentsAgreeWithConsumption:
+    """A segment claiming a block is untouched, beside a list of things that
+    touched it.
+
+    The live registry carried exactly this: B-2026-03 labelled Reserve while
+    v11's W6 window overlapped it and the cohort pipeline trained through it.
+    Every chain verified clean. It surfaced because a person sat down and
+    reconciled the registry by hand, which is the wrong way to find it — the
+    module whose entire purpose is consistency BETWEEN records had no block
+    checks at all.
+    """
+
+    def _reserve_block(self):
+        registry = BlockRegistry()
+        registry.add_block({
+            "id": "B-R-01", "start": "2026-05-25", "end": "2026-07-25",
+            "segment": "R", "data_complete": True,
+            "completed_at": "2026-07-26", "sources": ["hl"], "seams": [],
+        })
+        return registry
+
+    def test_an_untouched_reserve_block_is_clean(self):
+        ok, findings = verify_all(block_registry=self._reserve_block())
+        assert ok
+        assert not [f for f in findings if f.check == "blocks"]
+
+    def test_a_read_reserve_block_is_an_error(self):
+        blocks = self._reserve_block()
+        blocks.consume_block("B-R-01", "H-2026-ACCOHORT")
+
+        ok, findings = verify_all(block_registry=blocks)
+
+        assert ok is False
+        errors = _errors(findings, "blocks")
+        assert len(errors) == 1
+        assert "H-2026-ACCOHORT" in errors[0].message
+
+    def test_a_consumption_note_clears_it(self):
+        """Option 3: the segment stays, the explanation attaches."""
+        blocks = self._reserve_block()
+        blocks.consume_block("B-R-01", "H-2026-ACCOHORT")
+        blocks.acknowledge_consumption(
+            "B-R-01", "H-2026-ACCOHORT",
+            rationale="Cohort pipeline trained through this window. Spent for "
+                      "wallet-selection work; holdout-grade at best "
+                      "elsewhere.",
+            acknowledged_at="2026-08-19T00:00:00Z")
+
+        ok, findings = verify_all(block_registry=blocks)
+
+        assert ok, [str(f) for f in findings]
+        assert blocks.get_block("B-R-01")["segment"] == "R"
+
+    def test_a_note_covers_only_the_entry_it_names(self):
+        """No blank cheques. A second reader re-raises the error."""
+        blocks = self._reserve_block()
+        blocks.consume_block("B-R-01", "H-2026-ACCOHORT")
+        blocks.acknowledge_consumption(
+            "B-R-01", "H-2026-ACCOHORT", rationale="explained",
+            acknowledged_at="2026-08-19T00:00:00Z")
+        blocks.consume_block("B-R-01", "H-2026-LATER")
+
+        ok, findings = verify_all(block_registry=blocks)
+
+        assert ok is False
+        errors = _errors(findings, "blocks")
+        assert len(errors) == 1
+        assert "H-2026-LATER" in errors[0].message
+
+    def test_a_note_for_a_non_reader_is_an_error(self):
+        """How a pre-acknowledgment would look if one were ever written in by
+        hand — blocks.yaml is a plain file, so verify is the only backstop."""
+        blocks = self._reserve_block()
+        blocks.consume_block("B-R-01", "H-2026-ACCOHORT")
+        raw = blocks.get_block("B-R-01")
+        raw["consumption_notes"] = [{"entry_id": "H-2026-NEVER",
+                                     "rationale": "pre-clearing",
+                                     "acknowledged_at": "2026-08-19"}]
+        blocks._blocks["B-R-01"] = raw
+
+        ok, findings = verify_all(block_registry=blocks)
+
+        assert ok is False
+        messages = " ".join(f.message for f in _errors(findings, "blocks"))
+        assert "H-2026-NEVER" in messages
+        assert "pre-clears" in messages
+
+    def test_exploration_and_screen_consumption_is_not_flagged(self):
+        """The check must not cry wolf.
+
+        The first cut flagged any consumed block whose segment was not V.
+        Against the live registry that produced six false alarms — every
+        exploration and screen block, where being read is the entire point —
+        burying the single real R case. Caught by running the check against
+        the real instance rather than a synthesized one, which is also how
+        the citation resolver's #25 bug was found.
+        """
+        blocks = BlockRegistry()
+        for block_id, segment in (("B-E", "E"), ("B-S1", "S1"),
+                                  ("B-S2", "S2"), ("B-L", "L")):
+            blocks.add_block({
+                "id": block_id, "start": "2026-01-01", "end": "2026-03-01",
+                "segment": segment, "data_complete": True,
+                "completed_at": "2026-03-15", "sources": ["hl"], "seams": [],
+            })
+            blocks.consume_block(block_id, "H-2026-S002")
+
+        ok, findings = verify_all(block_registry=blocks)
+
+        assert ok, [str(f) for f in findings]
+        assert not [f for f in findings if f.check == "blocks"]
+
+    def test_promoting_a_read_block_into_reserve_is_refused(self):
+        """R is the untouched claim, so promoting INTO it is claim-making too.
+
+        E→R over existing consumption asserts 'nothing has read this' about a
+        block that has been read, exactly as R→V does.
+        """
+        blocks = BlockRegistry()
+        blocks.add_block({
+            "id": "B-E2", "start": "2026-01-01", "end": "2026-03-01",
+            "segment": "E", "data_complete": True,
+            "completed_at": "2026-03-15", "sources": ["hl"], "seams": [],
+        })
+        blocks.consume_block("B-E2", "H-2026-S002")
+
+        with pytest.raises(ValueError, match="already been read"):
+            blocks.promote_block("B-E2", "R")
+
+    def test_consumption_of_a_v_block_is_not_flagged(self):
+        """Consuming validation data is what V is for."""
+        blocks = _blocks()
+        blocks.consume_block("B-V-01", "H-2026-AC10")
+
+        ok, findings = verify_all(block_registry=blocks)
+
+        assert ok, [str(f) for f in findings]
+
+    def test_a_promotion_over_prior_consumption_warns_but_passes(self):
+        """Permitted, recorded, and not equal evidence to a block held clean.
+
+        A warning for the same reason the holdout check is one: the tool
+        cannot adjudicate the attestation, only refuse to let it pass in
+        silence.
+        """
+        blocks = self._reserve_block()
+        blocks.consume_block("B-R-01", "H-2026-ACCOHORT")
+        blocks.acknowledge_consumption(
+            "B-R-01", "H-2026-ACCOHORT", rationale="explained",
+            acknowledged_at="2026-08-19T00:00:00Z")
+        blocks.promote_block("B-R-01", "V",
+                             acknowledge_prior_consumption=True,
+                             rationale="exploration only, nothing scored")
+
+        ok, findings = verify_all(block_registry=blocks)
+
+        assert ok, [str(f) for f in findings]
+        warnings = [f for f in findings
+                    if f.check == "blocks" and f.severity == "warning"]
+        assert len(warnings) == 1
+        assert "exploration only" in warnings[0].message

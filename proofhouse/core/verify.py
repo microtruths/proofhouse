@@ -36,8 +36,8 @@ class Finding:
     """One integrity problem.
 
     Attributes:
-        check: Which check produced it ('chain', 'schema', 'temporal',
-            'ordering', 'references').
+        check: Which check produced it ('chain', 'schema', 'blocks',
+            'temporal', 'ordering', 'references').
         severity: 'error' or 'warning'. Errors fail the verify.
         where: The record the problem is in.
         message: What is wrong.
@@ -105,6 +105,7 @@ def verify_all(registry=None, ledger=None, amendment_log=None,
     by_id = {e["id"]: e for e in entries}
 
     _check_schema(entries, block_registry, findings)
+    _check_blocks(block_registry, findings)
     _check_temporal(entries, block_registry, findings)
     _check_references(entries, by_id, ledger, amendment_log, fill_log,
                       citation_resolver, findings)
@@ -141,6 +142,70 @@ def _check_schema(entries, block_registry, findings):
         except ValidationError as exc:
             findings.append(Finding(
                 "schema", "error", entry.get("id", "?"), str(exc)))
+
+
+def _check_blocks(block_registry, findings):
+    """A block's segment and its consumption record must agree.
+
+    Segment R asserts a block is untouched. Nothing used to check that against
+    `consumed_by` sitting in the same record, so the live registry carried a
+    block labelled Reserve that two pipelines had read — found by a person
+    reconciling by hand, which is the wrong way to find it.
+
+    Reserve is the only segment whose label is a claim about the PAST rather
+    than a permission. E/S1/S2/V/L say what a block may be used for; R says
+    nothing has been read from it. Claims about the past can be discovered
+    wrong, and this is the check that discovers them.
+
+    The contradiction clears when a consumption note explains it — segment
+    stays, explanation attaches. That keeps the one-way ladder intact, at the
+    cost of R meaning "sealed unless a note says otherwise" rather than
+    "sealed".
+    """
+    if block_registry is None:
+        return
+
+    for block in block_registry.list_blocks():
+        block_id = block.get("id", "?")
+        readers = {c.get("entry_id") for c in block.get("consumed_by") or []}
+        segment = block.get("segment")
+
+        for entry_id in block_registry.unexplained_consumption(block_id):
+            findings.append(Finding(
+                "blocks", "error", block_id,
+                "segment {} but entry {} has read it. {} claims the block is "
+                "untouched and the registry says otherwise. Either file a "
+                "consumption note saying what was read and what the block is "
+                "now unfit for, or the label is simply "
+                "wrong.".format(segment, entry_id, segment)))
+
+        # A note for an entry that never read the block is how a blank cheque
+        # would be reintroduced: pre-clear a block, and every later reading
+        # passes this check silently.
+        for note in block.get("consumption_notes") or []:
+            if note.get("entry_id") not in readers:
+                findings.append(Finding(
+                    "blocks", "error", block_id,
+                    "consumption note names entry {}, which never consumed "
+                    "this block. A note filed ahead of consumption pre-clears "
+                    "every later reading of it.".format(note.get("entry_id"))))
+
+        # Acknowledged and permitted, but not equal evidence to a block held
+        # clean — and, like the holdout case, invisible everywhere else. Warned
+        # rather than errored for the same reason: the tool cannot adjudicate
+        # an attestation, only refuse to let the weaker case pass as the
+        # stronger one silently.
+        ack = block.get("promotion_acknowledgment")
+        if ack:
+            findings.append(Finding(
+                "blocks", "warning", block_id,
+                "promoted {}→{} over prior consumption by {}. Validation data "
+                "that something had already read: the claim it was unexamined "
+                "rests on the recorded rationale — {!r} — rather than on "
+                "nothing having touched it.".format(
+                    ack.get("from_segment"), block.get("segment"),
+                    ", ".join(ack.get("prior_consumption") or []),
+                    ack.get("rationale"))))
 
 
 def _check_temporal(entries, block_registry, findings):

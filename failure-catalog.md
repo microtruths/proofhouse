@@ -64,6 +64,14 @@ Errors were made by every participant: the human's plan drafts, the primary revi
 > completion audit. The spec was wrong and the implementation was spec-faithful. Fix deployed
 > same day while only 2 registry entries + 1 ledger row existed (cheapest moment).
 
+| **28** | **The seam gate was unreachable on the path that mattered, and the registry never read its own consumption record.** Two defects in `blocks.py`, found together. (a) `consume_block` ran E4's single-use check *before* the seam check, and E4 returns early when the same entry re-consumes — so `consume as R → promote to V → consume again` skipped the seam gate entirely, defeating #12 by statement ordering. (b) `promote_block` never consulted `consumed_by`, so one entry could train on a reserve block, promote it to V, and score itself on the same window; the finished record was byte-for-byte identical to a block held clean and validated once. Separately, the live registry carried B-2026-03 labelled **R — untouched** while v11's W6 overlapped it and the cohort pipeline trained through it. Every hash chain verified clean throughout, and `verify` had no block checks at all. | Phase 0 `blocks.py` §4.1, carried through Phases 1–2 | Adversarial probing of the module during the 2026-08-19 ledger reconciliation; the mislabelled block surfaced by hand reconciliation, not by the tool | **Ordering is part of a check's definition.** A guard placed after an early return is not a guard. Pairs with #27 — that was a check testing the wrong thing, this is a correct check on an unreachable line. And: **a record that holds a fact is not the same as a system that reads it.** `consumed_by` had said the block was contaminated all along; three separate readers walked past it. Fix: seam check ahead of E4; promotion to V consults `consumed_by` and requires written acknowledgment to cross; `verify` gains block checks; `blocks acknowledge` attaches an explanation without moving the segment. |
+
+> **Entry #28 provenance.** Found 2026-08-19 by probing `blocks.py` with throwaway scripts
+> after Finding 2 of the ledger reconciliation. The finding's own diagnosis — "no way to record
+> that a Reserve block turned out contaminated" — was wrong: the record existed. Both real bugs
+> were behind it, and neither was what had been reported. **The third audit running, a green
+> suite proved nothing and probing found the defects.**
+
 ## Process lessons (meta)
 
 - **Review the diff AND the whole.** Several errors (#17, stale "200 draws" counts, a rejected-suggestion entry contradicting an adopted rule) were merge debris invisible to diff-only review.

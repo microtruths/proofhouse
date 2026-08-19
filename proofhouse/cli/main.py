@@ -166,6 +166,17 @@ def blocks_list():
             )
         if seams:
             line += "  seams={}".format(seams)
+        # A segment that claims the block is untouched, next to a list of
+        # things that touched it, should not read as unremarkable. Surfacing
+        # this took a hand reconciliation once; it should take one command.
+        unexplained = block_reg.unexplained_consumption(b["id"])
+        if unexplained:
+            line += "  ** {} CLAIMS UNTOUCHED, READ BY {} **".format(
+                b["segment"], ", ".join(unexplained))
+        elif b.get("consumption_notes"):
+            line += "  (consumption explained)"
+        if b.get("promotion_acknowledgment"):
+            line += "  (promoted over prior consumption)"
         click.echo(line)
 
 
@@ -188,14 +199,53 @@ def blocks_complete(block_id):
 @blocks.command("promote")
 @click.argument("block_id")
 @click.argument("segment")
-def blocks_promote(block_id, segment):
+@click.option("--acknowledge-prior-consumption", is_flag=True,
+              help="Cross a block something has already read into V.")
+@click.option("--rationale", default=None,
+              help="Why crossing it is legitimate. Required to acknowledge.")
+def blocks_promote(block_id, segment, acknowledge_prior_consumption,
+                   rationale):
     """Promote a block to a higher segment (e.g., R→V)."""
     root = _get_root()
     block_reg = _get_block_registry(root)
 
     try:
-        block_reg.promote_block(block_id, segment)
+        block_reg.promote_block(
+            block_id, segment,
+            acknowledge_prior_consumption=acknowledge_prior_consumption,
+            rationale=rationale)
         click.echo("Promoted block {} to segment {}".format(block_id, segment))
+        if acknowledge_prior_consumption:
+            click.echo("  acknowledged over prior consumption: {}".format(
+                rationale))
+    except (ValueError, KeyError) as e:
+        click.echo("Error: {}".format(e), err=True)
+        sys.exit(1)
+
+
+@blocks.command("acknowledge")
+@click.argument("block_id")
+@click.argument("entry_id")
+@click.option("--rationale", required=True,
+              help="What was read, and what the block is now unfit for.")
+def blocks_acknowledge(block_id, entry_id, rationale):
+    """Explain consumption the block's segment does not imply.
+
+    Use when a block labelled Reserve turns out to have been read. The
+    segment does not move — moving it would need a demotion path, and
+    demotion is what makes single-use validation meaningless. The
+    explanation attaches instead, and `promote` reads it back to you if
+    you later try to spend the block as validation data.
+    """
+    root = _get_root()
+    block_reg = _get_block_registry(root)
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        block_reg.acknowledge_consumption(block_id, entry_id, rationale, ts)
+        click.echo("Acknowledged consumption of {} by {}".format(
+            block_id, entry_id))
+        click.echo("  {}".format(rationale))
     except (ValueError, KeyError) as e:
         click.echo("Error: {}".format(e), err=True)
         sys.exit(1)
