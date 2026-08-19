@@ -72,6 +72,13 @@ Errors were made by every participant: the human's plan drafts, the primary revi
 > were behind it, and neither was what had been reported. **The third audit running, a green
 > suite proved nothing and probing found the defects.**
 
+| **29** | **The fix for #28 made the worst available action the cheapest one.** `verify` reports unexplained consumption on a Reserve block as an ERROR and an acknowledged promotion as a WARNING. Because promotion only required an acknowledgment — not that the reading already be explained — the quickest way to make `verify` pass was to promote the contaminated block into **validation**, precisely the act the check exists to prevent. Every individual rule was defensible; the incentive they composed into pointed at the wrong door. Found in the same probing pass, three commits after the fix it followed. | The #28 remediation (2026-08-19), reviewed the same day | Probing the composed behaviour rather than the rules separately — asking "what is the cheapest way to make this check shut up?" | **Audit the gradient, not just the rules.** A control's strength is set by the cost of the cheapest path around it, and that path is a property of the whole system rather than of any one check. Whenever a check has both a hard and a soft outcome, ask which one the lazy route reaches. Fix: explaining is now a prerequisite of promoting, never an alternative to it. |
+
+> **Entry #29 provenance.** Found 2026-08-19 auditing the #28 fix, alongside boolean fill
+> inputs being read as numbers (`int(True)` is 1, so `icc: true` silently became perfect
+> within-cluster correlation) and `"inf"` being written into a hashed record as a power
+> derivation's cap. The audit of a fix found more than the audit that produced it.
+
 ## Process lessons (meta)
 
 - **Review the diff AND the whole.** Several errors (#17, stale "200 draws" counts, a rejected-suggestion entry contradicting an adopted rule) were merge debris invisible to diff-only review.

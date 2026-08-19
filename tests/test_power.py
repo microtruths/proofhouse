@@ -197,8 +197,11 @@ class TestPowerEventsRule:
 
         assert result["deff"] == pytest.approx(1.0)
         assert result["n_eff"] == pytest.approx(400.0)
-        # No clustering means no saturation: more events always buy power.
-        assert result["n_eff_cap"] == float("inf")
+        # No clustering means no cap at all: more events always buy power.
+        # Reported as None rather than infinity — "inf" in a record parses
+        # back as a number, which is the trap V-15 closes for thresholds.
+        assert result["n_eff_cap"] is None
+        assert result["pct_of_cap"] is None
         assert result["saturated"] is False
 
     def test_icc_one_collapses_to_the_cluster_count(self):

@@ -44,13 +44,18 @@ sometimes tell you a result is weaker than you thought. That isn't a malfunction
 ## What this is
 
 A research substrate that enforces declaration-time constraints on hypotheses. Registration
-either is or isn't well-formed; whether a hypothesis passes is a separate concern (Phase 2).
+either is or isn't well-formed; whether a hypothesis passes is decided separately, by a gate
+that reads only what was committed before the data was seen.
 
 **Phase 0 delivers:** record schema, hash chain, block registry, ledger, registry with 6
-enforced checks + 10 schema validators, and CLI.
+enforced checks and its first schema validators, and CLI.
 
 **Phase 1 adds:** eval runner, p-values with declared sidedness, FDR control (BH / BY),
 the two-stage screening funnel, and the subperiod ledger.
+
+**Phase 2 adds:** the gate engine, amendments and the re-run lock, pending-field fills,
+cross-record verification, and the findings memo. Registration through verdict now runs
+end to end from the CLI.
 
 ## Quick start
 
@@ -265,11 +270,23 @@ wallet-selection study and holdout-grade at best for an unrelated family. A
 boolean over-refuses one case and under-informs the other; only a sentence can
 say which.
 
-Promotion **to V** consults `consumed_by`, because promoting is the act of
-claiming a block is unexamined validation data. Crossing a block that has been
-read requires an explicit acknowledgment and a written reason — the same shape
-as the seam rule (#12) — and the refusal reads any recorded note back to you at
-the moment you try to spend it.
+Promotion into **R or V** consults `consumed_by`, because both segments claim a
+block has not been read. Crossing one that has been takes two steps, in order:
+
+1. **Every reading must already be explained.** A block with an unexplained
+   reader cannot be promoted at all.
+2. **Then the crossing itself must be acknowledged**, with its own written
+   reason — the same shape as the seam rule (#12).
+
+The order matters and is not incidental. `verify` reports an unexplained
+reading as an **error** and an acknowledged promotion as a **warning**, so for
+one commit the cheapest way to make `verify` pass was to promote the
+contaminated block into validation — the single worst action available,
+rewarded by the tool. Filing the note is now a prerequisite of promoting, never
+an alternative to it.
+
+The refusal reads any recorded note back to you at the moment you try to spend
+the block, which is the return on writing one.
 
 ## Verify
 
@@ -308,7 +325,7 @@ that is where the original one lived.
 # Run all tests
 python -m pytest tests/ -v
 
-# 606 tests. The Phase 0 core:
+# 618 tests. The Phase 0 core:
 #   C-1…C-5:  Canonical serialization (byte-stability)
 #   H-1…H-4:  Hash chain (construction + tamper detection)
 #   B-1…B-9:  Block registry (consumption, seams, promotion, and the
@@ -322,7 +339,18 @@ python -m pytest tests/ -v
 #             when or where it ran
 #
 # Phase 1–2 adds G-1…G-11 (gate engine), A-1…A-4 (amendments, re-run lock),
-# P-1…P-5 (pending-field fill).
+# P-1…P-5 (pending-field fill), plus both power rules, the cross-record
+# verifier, and the findings memo.
+#
+# Several tests exist because a probe found something a green suite had
+# missed. They are worth reading as a list of what this tool got wrong:
+#   - the seam gate that sat behind an early return and never ran
+#   - promoting a block to validation as a cheaper way to clear the error
+#     for not having explained why it was read
+#   - a benchmark-sweep warning that fired unconditionally, including on
+#     results that had run the full sweep
+#   - a power derivation assembled into the report and never printed
+#   - booleans accepted as numeric fill inputs, since int(True) is 1
 ```
 
 ## License

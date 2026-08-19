@@ -331,15 +331,15 @@ class TestTheResolverAgainstTheRealCatalog:
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "failure-catalog.md")
 
-    def test_the_real_catalog_parses_to_28(self):
+    def test_the_real_catalog_parses_to_29(self):
         """Pinned to the real catalog's highest entry.
 
         Bump this when a catalog entry lands — the test failing on a new
-        entry is the pin working, not a regression. #28 landed 2026-08-19.
+        entry is the pin working, not a regression. #29 landed 2026-08-19.
         """
         resolver = catalog_citation_resolver(self.CATALOG)
         assert resolver is not None
-        assert resolver.highest == 28
+        assert resolver.highest == 29
 
     def test_emphasized_row_numbers_are_read(self):
         """'| **27** |' is the format that broke it."""
@@ -517,8 +517,47 @@ class TestBlockSegmentsAgreeWithConsumption:
         })
         blocks.consume_block("B-E2", "H-2026-S002")
 
+        # Unexplained: refused outright, and NOT because of the label — an E
+        # block never claimed to be untouched. The note is required before
+        # any crossing into a claim-making segment.
+        with pytest.raises(ValueError, match="no consumption note"):
+            blocks.promote_block("B-E2", "R")
+
+        blocks.acknowledge_consumption("B-E2", "H-2026-S002", "explored here",
+                                       "2026-08-19T00:00:00Z")
         with pytest.raises(ValueError, match="already been read"):
             blocks.promote_block("B-E2", "R")
+
+    def test_promoting_is_not_a_cheaper_way_to_clear_the_error(self):
+        """THE INCENTIVE MUST NOT POINT AT THE WORST ACTION.
+
+        An unexplained reading on an R block is an ERROR; an acknowledged
+        promotion is only a WARNING. So for one commit the cheapest way to
+        make `verify` pass was to promote the contaminated block into
+        validation — precisely the act the whole check exists to prevent,
+        and the tool rewarded it.
+
+        Filing the note must be a PREREQUISITE of promoting, never an
+        alternative to it.
+        """
+        blocks = self._reserve_block()
+        blocks.consume_block("B-R-01", "H-2026-ACCOHORT")
+        assert verify_all(block_registry=blocks)[0] is False
+
+        with pytest.raises(ValueError, match="no consumption note"):
+            blocks.promote_block("B-R-01", "V",
+                                 acknowledge_prior_consumption=True,
+                                 rationale="making the error go away")
+
+        assert verify_all(block_registry=blocks)[0] is False
+
+    def test_promoting_to_the_same_segment_stays_a_no_op(self):
+        """A no-op promotion had always been silently idempotent, and the
+        consumption guard briefly made it raise."""
+        blocks = _blocks()
+        blocks.consume_block("B-V-01", "H-2026-AC10")
+        blocks.promote_block("B-V-01", "V")
+        assert blocks.get_block("B-V-01")["segment"] == "V"
 
     def test_consumption_of_a_v_block_is_not_flagged(self):
         """Consuming validation data is what V is for."""

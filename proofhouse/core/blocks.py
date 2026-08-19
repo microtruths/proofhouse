@@ -58,6 +58,14 @@ _SEAM_CHECK_SEGMENTS = frozenset({"V"})
 _UNTOUCHED_CLAIM_SEGMENTS = frozenset({"R", "V"})
 
 
+def _unexplained_readers(block):
+    """Entries that read this block with no consumption note covering them."""
+    explained = {n.get("entry_id")
+                 for n in block.get("consumption_notes") or []}
+    return sorted({c["entry_id"] for c in block.get("consumed_by", [])}
+                  - explained)
+
+
 class BlockRegistry:
     """Block registry with consumption tracking and optional disk persistence.
 
@@ -323,8 +331,33 @@ class BlockRegistry:
                 "blocks do not un-spend.".format(block_id, current, new_segment)
             )
 
+        # A promotion to the segment a block already has is a no-op and must
+        # stay one. Without this, `promote_block(b, "V")` on an already-V
+        # consumed block started raising, where it had always been silently
+        # idempotent.
+        if new_segment == current:
+            return
+
         readers = [c["entry_id"] for c in block.get("consumed_by", [])]
         if new_segment in _UNTOUCHED_CLAIM_SEGMENTS and readers:
+            # EXPLAINING MUST NOT BE THE EXPENSIVE PATH.
+            #
+            # verify reports unexplained consumption on an R block as an
+            # ERROR and an acknowledged promotion as a WARNING. So without
+            # this, the cheapest way to make the error go away was to promote
+            # the contaminated block to validation — the single worst action
+            # available, rewarded by the tool. Requiring the note FIRST makes
+            # promotion strictly additional to explaining rather than an
+            # alternative to it.
+            unexplained = _unexplained_readers(block)
+            if unexplained:
+                raise ValueError(
+                    "Block {} has been read by {} with no consumption note. "
+                    "File a note saying what was read and what the block is "
+                    "now unfit for before crossing it into {} — promoting is "
+                    "not a way to settle an unexplained reading.".format(
+                        block_id, ", ".join(unexplained), new_segment)
+                )
             if not acknowledge_prior_consumption:
                 raise ValueError(
                     "Block {} has already been read by {} and cannot be "
@@ -439,14 +472,19 @@ class BlockRegistry:
         V-block that was read BEFORE its promotion is caught by
         promotion_acknowledgment instead, which is the record of that specific
         act.
+
+        This is the REPORTING question ("does the label contradict the
+        record?"), which is narrower than the PROMOTION question ("is every
+        reading explained?"). promote_block uses _unexplained_readers for the
+        latter, because a note should be required before an E block is crossed
+        into validation too, where no label was ever contradicted.
         """
+        if block_id not in self._blocks:
+            raise KeyError("Block not found: {}".format(block_id))
         block = self._blocks[block_id]
         if block.get("segment") != "R":
             return []
-        explained = {n.get("entry_id")
-                     for n in block.get("consumption_notes") or []}
-        return sorted({c["entry_id"] for c in block.get("consumed_by", [])}
-                      - explained)
+        return _unexplained_readers(block)
 
     def enforce_block_isolation(self, block_ids, stage):
         """Enforce block segment constraints for a given stage.

@@ -87,6 +87,17 @@ def _rule_power(inputs):
     house choice, which is legitimate because the direction is fixed before
     the data is seen.
     """
+    # Bools are numbers in Python. Refused here for the same reason
+    # power_events refuses them and gate.py refuses them as statistics:
+    # `prior_trials: true` becomes a single trial and the resulting number is
+    # entirely plausible.
+    for name in ("effect_size", "blocks", "prior_trials"):
+        if isinstance(inputs.get(name), bool):
+            raise FillRefused(
+                "power() input {} is the boolean {!r}, not a number.".format(
+                    name, inputs[name])
+            )
+
     try:
         effect_size = float(inputs["effect_size"])
         blocks = int(inputs["blocks"])
@@ -102,11 +113,16 @@ def _rule_power(inputs):
         )
 
     span_years = blocks_to_span_years(blocks)
-    result = compute_power_check(
-        expected_sharpe=effect_size,
-        span_years=span_years,
-        trial_count=prior_trials,
-    )
+    try:
+        result = compute_power_check(
+            expected_sharpe=effect_size,
+            span_years=span_years,
+            trial_count=prior_trials,
+        )
+    except ValueError as exc:
+        # A degenerate registration (0 blocks, 0 prior trials) surfaced as a
+        # bare ValueError out of `fill` rather than as a refusal.
+        raise FillRefused("power() refused: {}".format(exc))
 
     return {
         "value": result["power"],
@@ -163,6 +179,22 @@ def _rule_power_events(inputs):
             "as 0 if that is genuinely meant.".format(", ".join(missing))
         )
 
+    # Booleans are numbers in Python: int(True) is 1 and float(True) is 1.0,
+    # so `icc: true` would silently become perfect within-cluster correlation
+    # and `prior_trials: true` a single trial. Both produce a plausible power
+    # number from a registration that plainly meant something else. gate.py
+    # already refuses bools as type errors for exactly this reason; the same
+    # predicate belongs here.
+    for name in ("effect_ratio", "n_events", "n_clusters", "icc",
+                 "prior_trials"):
+        if isinstance(inputs[name], bool):
+            raise FillRefused(
+                "power_events() input {} is the boolean {!r}, not a number. "
+                "Python would read it as {}, producing a plausible power from "
+                "a registration that meant something else.".format(
+                    name, inputs[name], int(inputs[name]))
+            )
+
     try:
         effect_ratio = float(inputs["effect_ratio"])
         n_events = int(inputs["n_events"])
@@ -190,26 +222,31 @@ def _rule_power_events(inputs):
     except ValueError as exc:
         raise FillRefused("power_events() refused: {}".format(exc))
 
+    # deff is the step where a unit or clustering error would hide, the same
+    # role span_years plays in power()'s derivation. n_eff_cap and pct_of_cap
+    # are here because past roughly G/icc more events stop buying power, and a
+    # design planning to accumulate its way out of a weak result needs to know
+    # that before it starts.
+    derivation = {
+        "m_bar": decimal_str(result["m_bar"]),
+        "deff": decimal_str(result["deff"]),
+        "n_eff": decimal_str(result["n_eff"]),
+        "saturated": bool(result["saturated"]),
+        "z_effect": decimal_str(result["z_effect"]),
+        "z_threshold": decimal_str(result["z_threshold"]),
+        "threshold_quantile": decimal_str(
+            result["inputs"]["threshold_quantile"]),
+    }
+    # Absent when icc is 0, because then there IS no cap. Recording "inf"
+    # would put a value in the record that parses back as a number.
+    if result["n_eff_cap"] is not None:
+        derivation["n_eff_cap"] = decimal_str(result["n_eff_cap"])
+        derivation["pct_of_cap"] = decimal_str(result["pct_of_cap"])
+
     return {
         "value": result["power"],
         "flagged": bool(result["flagged"]),
-        # deff is the step where a unit or clustering error would hide, the
-        # same role span_years plays in power()'s derivation. n_eff_cap and
-        # pct_of_cap are here because past roughly G/icc more events stop
-        # buying power, and a design planning to accumulate its way out of a
-        # weak result needs to know that before it starts.
-        "derivation": {
-            "m_bar": decimal_str(result["m_bar"]),
-            "deff": decimal_str(result["deff"]),
-            "n_eff": decimal_str(result["n_eff"]),
-            "n_eff_cap": decimal_str(result["n_eff_cap"]),
-            "pct_of_cap": decimal_str(result["pct_of_cap"]),
-            "saturated": bool(result["saturated"]),
-            "z_effect": decimal_str(result["z_effect"]),
-            "z_threshold": decimal_str(result["z_threshold"]),
-            "threshold_quantile": decimal_str(
-                result["inputs"]["threshold_quantile"]),
-        },
+        "derivation": derivation,
     }
 
 

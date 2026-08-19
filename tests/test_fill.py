@@ -386,3 +386,61 @@ class TestPowerEventsFillRule:
             "power(effect_size, blocks, prior_trials)",
             {"effect_size": "2.0", "blocks": 24, "prior_trials": 1})
         assert result["value"] == pytest.approx(0.7467, abs=1e-3)
+
+
+class TestBooleanInputsAreRefused:
+    """Bools are numbers in Python, and that is a silent-wrong-answer bug.
+
+    `icc: true` becomes perfect within-cluster correlation and takes PFR1's
+    power from 0.863 to 0.300. `prior_trials: true` becomes a single trial
+    and takes it to 0.988. Both are entirely plausible numbers from a
+    registration that plainly meant something else.
+
+    gate.py already refuses bools as statistics for this exact reason. The
+    predicate was not applied to fill inputs until the 2026-08-19 audit.
+    """
+
+    EVENTS = ("power_events(effect_ratio, n_events, n_clusters, icc, "
+              "prior_trials)")
+    EVENT_INPUTS = {"effect_ratio": "0.1361", "n_events": 950,
+                    "n_clusters": 279, "icc": "0.067", "prior_trials": 4}
+    SHARPE = "power(effect_size, blocks, prior_trials)"
+    SHARPE_INPUTS = {"effect_size": "2.0", "blocks": 24, "prior_trials": 1}
+
+    @pytest.mark.parametrize("field", ["effect_ratio", "n_events",
+                                       "n_clusters", "icc", "prior_trials"])
+    def test_power_events_refuses_a_boolean(self, field):
+        with pytest.raises(FillRefused) as exc:
+            resolve_fill_rule(self.EVENTS,
+                              dict(self.EVENT_INPUTS, **{field: True}))
+        assert "boolean" in str(exc.value)
+
+    @pytest.mark.parametrize("field", ["effect_size", "blocks",
+                                       "prior_trials"])
+    def test_the_sharpe_rule_refuses_a_boolean_too(self, field):
+        """Same predicate, both rules. Fixing only the new one would leave
+        the older path wrong and the two inconsistent."""
+        with pytest.raises(FillRefused) as exc:
+            resolve_fill_rule(self.SHARPE,
+                              dict(self.SHARPE_INPUTS, **{field: True}))
+        assert "boolean" in str(exc.value)
+
+    def test_a_degenerate_registration_refuses_rather_than_crashing(self):
+        """prior_trials=0 raised a bare ValueError out of the Sharpe rule."""
+        with pytest.raises(FillRefused):
+            resolve_fill_rule(self.SHARPE,
+                              dict(self.SHARPE_INPUTS, prior_trials=0))
+        with pytest.raises(FillRefused):
+            resolve_fill_rule(self.EVENTS,
+                              dict(self.EVENT_INPUTS, prior_trials=0))
+
+    def test_no_cap_is_absent_from_the_record_not_infinity(self):
+        """decimal_str(float('inf')) is the string 'inf', which parses back
+        as a number. Absent says there is no cap; 'inf' says the cap is a
+        value you cannot compute with."""
+        derivation = resolve_fill_rule(
+            self.EVENTS, dict(self.EVENT_INPUTS, icc="0"))["derivation"]
+
+        assert "n_eff_cap" not in derivation
+        assert "pct_of_cap" not in derivation
+        assert derivation["saturated"] is False

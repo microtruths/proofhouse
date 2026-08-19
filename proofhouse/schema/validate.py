@@ -377,7 +377,12 @@ def validate_entry(entry, block_registry=None, existing_entries=None):
     power_block = entry.get("power_check") or {}
     power_value = power_block.get("value") or {}
     fill_rule = power_value.get("fill_rule") or ""
-    if "power_events" in str(fill_rule):
+    # Exact name, not a substring: `power_events_v2(...)` would match `in`
+    # and get checked under a rule it does not use. Parsed inline rather than
+    # with core.fill.parse_fill_rule, because schema/ never imports from
+    # core/ — enforced by test S-1.
+    rule_name = str(fill_rule).split("(")[0].strip()
+    if rule_name == "power_events":
         unit = (power_block.get("inputs") or {}).get("clustering_unit")
         if not isinstance(unit, str) or not unit.strip():
             errors.append(

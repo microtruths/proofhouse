@@ -202,17 +202,21 @@ class TestBlocks:
         reg = self._make_registry()
         reg.consume_block("B-2025-03", "H-2026-ACCOHORT")
 
-        with pytest.raises(ValueError, match="already been read"):
+        with pytest.raises(ValueError, match="no consumption note"):
             reg.promote_block("B-2025-03", "V")
 
     def test_b5_promote_to_v_allowed_with_acknowledgment(self):
         """B-5: the escape hatch, modeled on the seam precedent (#12).
 
         An absolute refusal gets routed around. The rationale is mandatory
-        and is recorded on the block.
+        and is recorded on the block. TWO gates in sequence: the reading must
+        be explained, and then crossing it must be acknowledged.
         """
         reg = self._make_registry()
         reg.consume_block("B-2025-03", "H-2026-ACCOHORT")
+        reg.acknowledge_consumption(
+            "B-2025-03", "H-2026-ACCOHORT", rationale="exploration only",
+            acknowledged_at="2026-08-19T00:00:00Z")
 
         reg.promote_block("B-2025-03", "V",
                           acknowledge_prior_consumption=True,
@@ -229,6 +233,9 @@ class TestBlocks:
         """B-5: acknowledging without saying why is not acknowledging."""
         reg = self._make_registry()
         reg.consume_block("B-2025-03", "H-2026-ACCOHORT")
+        reg.acknowledge_consumption(
+            "B-2025-03", "H-2026-ACCOHORT", rationale="exploration only",
+            acknowledged_at="2026-08-19T00:00:00Z")
 
         with pytest.raises(ValueError, match="rationale"):
             reg.promote_block("B-2025-03", "V",
@@ -257,8 +264,16 @@ class TestBlocks:
         reg = self._make_registry()
         reg.consume_block("B-2025-03", "H-2026-X")          # trains on it
 
-        with pytest.raises(ValueError, match="already been read"):
+        # Gate 1: the reading has no note, so it cannot be crossed at all.
+        with pytest.raises(ValueError, match="no consumption note"):
             reg.promote_block("B-2025-03", "V")             # was allowed
+
+        # Gate 2: even once explained, crossing must be acknowledged.
+        reg.acknowledge_consumption(
+            "B-2025-03", "H-2026-X", rationale="trained the cohort here",
+            acknowledged_at="2026-08-19T00:00:00Z")
+        with pytest.raises(ValueError, match="already been read"):
+            reg.promote_block("B-2025-03", "V")
 
     def test_b7_seam_check_survives_reconsumption(self):
         """B-7: the seam gate ran after E4's idempotent return, so it was
@@ -285,6 +300,8 @@ class TestBlocks:
         })
 
         reg.consume_block("B-SEAM-RV", "H-001")     # legal: R has no seam gate
+        reg.acknowledge_consumption("B-SEAM-RV", "H-001", "test fixture",
+                                    "2026-08-19T00:00:00Z")
         reg.promote_block("B-SEAM-RV", "V",
                           acknowledge_prior_consumption=True,
                           rationale="test fixture")
@@ -310,6 +327,8 @@ class TestBlocks:
             "seams": ["2025-07-27"],
         })
         reg.consume_block("B-SEAM-LATE", "H-001")
+        reg.acknowledge_consumption("B-SEAM-LATE", "H-001", "test fixture",
+                                    "2026-08-19T00:00:00Z")
         reg.promote_block("B-SEAM-LATE", "V",
                           acknowledge_prior_consumption=True,
                           rationale="test fixture")

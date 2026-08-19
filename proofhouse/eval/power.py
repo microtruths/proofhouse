@@ -215,9 +215,13 @@ def compute_power_events(effect_ratio, n_events, n_clusters, icc, trial_count,
 
     power = _phi(z_effect - z_threshold)
 
-    # icc=0 means no saturation at all: n_eff = n without bound.
-    n_eff_cap = (n_clusters / float(icc)) if icc > 0 else float("inf")
-    pct_of_cap = n_eff / n_eff_cap if n_eff_cap else 0.0
+    # icc=0 means no saturation at all: n_eff = n, unbounded. Reported as
+    # None rather than infinity — a record carrying "inf" reads as a number
+    # to anything that parses it back, which is the same trap V-15 exists to
+    # close for thresholds. Absent says "there is no cap"; "inf" says "the
+    # cap is a value you cannot compute with".
+    n_eff_cap = (n_clusters / float(icc)) if icc > 0 else None
+    pct_of_cap = (n_eff / n_eff_cap) if n_eff_cap else None
 
     return {
         "power": power,
@@ -225,7 +229,7 @@ def compute_power_events(effect_ratio, n_events, n_clusters, icc, trial_count,
         # Deliberately NOT folded into `flagged`. That flag means one thing
         # today — power below 0.5 — and overloading it would make an existing
         # report line ambiguous about which problem it is reporting.
-        "saturated": pct_of_cap > 0.8,
+        "saturated": pct_of_cap is not None and pct_of_cap > 0.8,
         "m_bar": m_bar,
         "deff": deff,
         "n_eff": n_eff,
