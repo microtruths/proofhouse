@@ -236,3 +236,49 @@ class TestAbsentInformationIsNotSilence:
         claims = build_report(entry, verdict)["non_claims"]
         assert not any("never filled" in c for c in claims)
         assert not any("weak evidence of absence" in c for c in claims)
+
+
+class TestBenchmarkSweepCanActuallyBeReported:
+    """Audit finding. The first version read `benchmark_results` off
+    CriterionOutcome, which has no such attribute, so the sweep was always
+    empty and 'SENSITIVITY SWEEP MISSING' fired unconditionally — including
+    on results that had run the full sweep.
+
+    A mandatory check that always fires is a check nobody reads. Same defect
+    class as the citation resolver that read the real catalog as ending at
+    #25.
+    """
+
+    def _with_sweep(self):
+        with open(os.path.join(FIXTURES,
+                               "v11_w6_behavioral_alpha.yaml")) as fh:
+            entry = yaml.safe_load(fh)
+        results = {
+            "s2_beats_s1_windows": ScoredResult("s2_beats_s1_windows", 0, 4),
+            "s2_median_gross_bps": ScoredResult(
+                "s2_median_gross_bps", -10729.0, 4,
+                benchmark_results={"s0-broad-pool": -236822.0,
+                                   "s6-sign-randomized": 1657.0}),
+        }
+        verdict = evaluate_gate(entry, results, block_registry=_blocks(),
+                                derived_inputs={"g3": {"sigma_w": SIGMA_W}})
+        return entry, verdict, results
+
+    def test_a_run_sweep_is_reported_not_called_missing(self):
+        entry, verdict, results = self._with_sweep()
+        report = build_report(entry, verdict, scored_results=results)
+
+        assert report["benchmark"]["sweep_missing"] is False
+        assert report["benchmark"]["sweep_results"] == {
+            "s0-broad-pool": -236822.0, "s6-sign-randomized": 1657.0}
+        text = render_text(report)
+        assert "SENSITIVITY SWEEP MISSING" not in text
+        assert "s0-broad-pool" in text
+
+    def test_an_absent_sweep_is_still_reported_missing(self):
+        entry, verdict, _ = self._with_sweep()
+        plain = {"s2_beats_s1_windows": ScoredResult("s2_beats_s1_windows", 0, 4),
+                 "s2_median_gross_bps": ScoredResult(
+                     "s2_median_gross_bps", -10729.0, 4)}
+        report = build_report(entry, verdict, scored_results=plain)
+        assert report["benchmark"]["sweep_missing"] is True

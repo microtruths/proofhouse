@@ -13,6 +13,11 @@ Phase 2c §2:
     proofhouse fill       — fill a pending field from its pinned rule, once
     proofhouse gate       — render the pre-committed gate; exit 1 on a fail
     proofhouse reject     — record a rejected idea
+    proofhouse amend      — file an amendment + its successor entry
+
+Phase 2.5 §5:
+    proofhouse verify     — full integrity check; exit 1 on error
+    proofhouse report     — findings memo
 
 "explore being fast is the single most load-bearing UX property in the
  project — the parent plan identifies 'you become the leak' as the
@@ -614,6 +619,7 @@ def report(entry_id):
         ledger=_ledger(root),
         amendments=_amendment_log(root).for_entry(entry_id),
         fills=fills,
+        scored_results={scored.statistic: scored},
     )))
 
 

@@ -87,7 +87,10 @@ proofhouse status
 | `proofhouse register <file>` | Validate, hash, chain, and register a hypothesis |
 | `proofhouse fill <id> <field>` | Fill a pending field from its pinned rule. Once only |
 | `proofhouse gate <id>` | Render the pre-committed gate; append a `gate` ledger row |
+| `proofhouse amend <id> <file> --rationale --impact` | File an amendment: record and successor entry, together or not at all |
 | `proofhouse reject --idea --reason` | Record a rejected idea so a later partial adoption shows |
+| `proofhouse verify` | Full integrity check across every log. Exits non-zero on error |
+| `proofhouse report <id>` | Render the findings memo |
 | `proofhouse status` | Show trial counts, block consumption, pending fields |
 
 `gate` exits non-zero on a fail, so it composes into a script without the
@@ -114,6 +117,8 @@ proofhouse/
     gate_run.py    # Orchestration: re-run lock, then verdict, then record
     amend.py       # Amendments, rejected ideas, the re-run lock
     fill.py        # Pending-field fills from pinned rules
+    verify.py      # Consistency BETWEEN records, not just within them
+    report.py      # The findings memo
   cli/
     main.py        # Click-based CLI
 ```
@@ -175,13 +180,43 @@ Deliberately allowed: replay with no intervening amendment, and re-running on
 blocks the pre-amendment gate never touched. A lock that blocks legitimate
 re-runs gets routed around, which is worse than no lock.
 
+## Verify
+
+Hash chains prove nobody edited a record after writing it. They prove nothing
+about whether records are consistent with **each other** — and each of these
+verifies clean at the chain level while being wrong:
+
+- a gate row citing an entry that does not exist
+- a gate run against a version whose amendment was not yet filed
+- a locked document citing a catalog entry that was never written
+- a validation window that had already concluded when the entry was registered
+
+The last one is a distinction worth naming. An **embargo** means the window had
+not finished at registration, so peeking was impossible and the claim rests on
+nothing. A **holdout** means the window had concluded, so "it was not examined"
+rests entirely on attestation. Both are legitimate; they are not equal
+evidence, and usually nothing in the record says which one you have.
+
+The dangling-citation check is failure catalog #26 mechanized: a locked
+document cited catalog entry #26 for three weeks while the catalog ended at
+#25. Citations are checked in every prose field, not just `prior_art`, because
+that is where the original one lived.
+
+## Fixtures
+
+| Fixture | What it exercises |
+|---|---|
+| `agentcopy_v10_ic_gate.yaml` | Single criterion, literal threshold. A recorded FAIL (IC 0.0389 vs >= 0.05) |
+| `tasteprint_experiment.yaml` | Domain-agnosticism — the core knows nothing about markets |
+| `v11_w6_behavioral_alpha.yaml` | Three criteria, per-criterion statistics, a derived threshold, and a recorded all-three-FAIL verdict |
+
 ## Tests
 
 ```bash
 # Run all tests
 python -m pytest tests/ -v
 
-# 490 tests. The Phase 0 core:
+# 560 tests. The Phase 0 core:
 #   C-1…C-5:  Canonical serialization (byte-stability)
 #   H-1…H-4:  Hash chain (construction + tamper detection)
 #   B-1…B-4:  Block registry (consumption, seams, promotion)

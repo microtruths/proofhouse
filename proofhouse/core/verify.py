@@ -144,16 +144,27 @@ def _check_schema(entries, block_registry, findings):
 
 
 def _check_temporal(entries, block_registry, findings):
-    """No validation window may predate the entry that registered it.
+    """Separate an EMBARGO from a HOLDOUT, because they are not equal evidence.
 
-    The temporal embargo, checked rather than trusted. An entry validated on a
-    window that already existed when it was written is indistinguishable from
-    a hypothesis written to fit data already seen.
+    * **Embargo** — the window had not finished when the entry was registered.
+      Peeking was physically impossible, so the claim rests on nothing.
+    * **Holdout** — the window had already concluded, and the claim that it
+      went unexamined rests entirely on attestation.
+
+    Both are legitimate designs; they are not equally strong, and nothing else
+    in the record distinguishes them. This is reported as a WARNING rather
+    than an error because the tool cannot adjudicate an attestation — it can
+    only refuse to let the weaker case pass as the stronger one silently.
+
+    Found by running verify against the retro-filed v11 W6 entry: W6's test
+    period ended 2026-06-30 and v11's original lock was 2026-07-23. The
+    validation window had concluded three weeks before registration. That is
+    invisible to a reader and to every other check in this file.
     """
     if block_registry is None:
         return
     for entry in entries:
-        created = entry.get("created_utc")
+        created = str(entry.get("created_utc") or "")
         if not created:
             continue
         for block_id in entry.get("validation_blocks") or []:
@@ -162,13 +173,22 @@ def _check_temporal(entries, block_registry, findings):
             except KeyError:
                 continue        # reported by the reference check
             end = block.get("end")
-            if end and str(end) < str(created)[:len(str(end))]:
+            if not end:
+                continue
+            # str() both sides: YAML parses an unquoted 2026-07-01 into a date
+            # object, and comparing that to a string raises rather than
+            # returning False. Compare on the shared date prefix.
+            end_text = str(end)[:10]
+            if end_text and end_text < created[:10]:
                 findings.append(Finding(
-                    "temporal", "error", entry.get("id", "?"),
-                    "validation block {} ends {}, before the entry was "
-                    "created ({}). A window that already existed at "
-                    "registration cannot embargo anything.".format(
-                        block_id, end, created)))
+                    "temporal", "warning", entry.get("id", "?"),
+                    "validation block {} ended {} but the entry was "
+                    "registered {}. This is a HOLDOUT, not a temporal "
+                    "embargo: the data existed at registration, so 'it was "
+                    "not examined' rests on attestation rather than on the "
+                    "data not yet existing. Weaker evidence, and nothing "
+                    "else in the record says so.".format(
+                        block_id, end_text, created[:10])))
 
 
 def _check_references(entries, by_id, ledger, amendment_log, fill_log,

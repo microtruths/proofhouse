@@ -36,7 +36,7 @@ from proofhouse.core.gate_run import foreclosure_advisory
 
 
 def build_report(entry, verdict, ledger=None, amendments=None, fills=None,
-                 errata=None):
+                 errata=None, scored_results=None):
     """Assemble the report structure. No rendering, no I/O.
 
     Args:
@@ -46,6 +46,10 @@ def build_report(entry, verdict, ledger=None, amendments=None, fills=None,
         amendments: Amendment records for this entry.
         fills: Fill records for this entry.
         errata: Optional list of {date, note} corrections.
+        scored_results: The {statistic: ScoredResult} the verdict was rendered
+            against. Required for the benchmark sweep — the sweep lives on
+            ScoredResult, not on the verdict, because it is a property of the
+            measurement rather than of the comparison.
 
     Returns:
         Dict with every committed content element.
@@ -72,7 +76,7 @@ def build_report(entry, verdict, ledger=None, amendments=None, fills=None,
         "verdict": "PASS" if verdict.passed else "FAIL",
         "combination": verdict.combination,
         "criteria": [c.to_dict() for c in verdict.criteria],
-        "benchmark": _benchmark_section(gate, verdict),
+        "benchmark": _benchmark_section(gate, scored_results),
         "multiplicity": {
             "universe": universe,
             "trials": trials,
@@ -117,17 +121,26 @@ def build_report(entry, verdict, ledger=None, amendments=None, fills=None,
     }
 
 
-def _benchmark_section(gate, verdict):
+def _benchmark_section(gate, scored_results):
     """The sensitivity sweep is mandatory, and its absence is stated.
 
     §2.2.1 found the benchmark choice can flip the sign — BTC subtraction gave
     +577 bps where an OI-weighted index gave -599 on the same data. A result
     reported against one benchmark, with no sweep, is not a finding about the
     strategy; it is a finding about the benchmark.
+
+    THE SWEEP LIVES ON ScoredResult, NOT ON THE VERDICT. It is a property of
+    the measurement, not of the comparison. The first version of this read
+    `benchmark_results` off CriterionOutcome, which has no such attribute, so
+    the sweep was ALWAYS empty and "SENSITIVITY SWEEP MISSING" fired
+    unconditionally — including on results that had run the full sweep. The
+    same defect class as the citation resolver that read the catalog as
+    ending at #25: a mandatory check that always fires is a check nobody
+    reads.
     """
     sweep = {}
-    for outcome in verdict.criteria:
-        sweep.update(getattr(outcome, "benchmark_results", None) or {})
+    for result in (scored_results or {}).values():
+        sweep.update(getattr(result, "benchmark_results", None) or {})
 
     return {
         "primary": gate.get("benchmark"),

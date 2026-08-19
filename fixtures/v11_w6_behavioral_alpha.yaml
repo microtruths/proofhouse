@@ -28,6 +28,22 @@
 # difference that could — so it is written down here, before the run, rather
 # than explained afterwards.
 #
+# A FINDING PROOFHOUSE SURFACED ABOUT v11 ITSELF.
+# `verify` reports that W6 is a HOLDOUT, not a temporal embargo. W6's test
+# period ended 2026-06-30; v11's original lock was 2026-07-23T17:09 EDT
+# (re-locked 2026-07-30). The validation window had therefore concluded three
+# weeks BEFORE the registration was locked.
+#
+# Both are legitimate designs and they are not equal evidence:
+#   embargo — the window had not finished, so peeking was impossible and the
+#             claim rests on nothing;
+#   holdout — the window had concluded, so "it was not examined" rests
+#             entirely on attestation.
+# W8 (Sep-Oct 2026) was a genuine embargo. W6 was not, and nothing in v11's
+# own documents distinguishes the two. The tool cannot adjudicate an
+# attestation; it can refuse to let the weaker case pass silently as the
+# stronger one.
+#
 # WHAT THIS FIXTURE CANNOT DO. power_check stays pending and cannot be
 # filled: proofhouse's power rule is Sharpe-denominated and v11 registered a
 # threshold in bps, so no effect_size exists to supply. `proofhouse fill`

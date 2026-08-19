@@ -216,3 +216,73 @@ class TestPowerCheckCannotBeFilled:
         with pytest.raises(FillRefused) as exc:
             fill_pending_field(entry, "power_check")
         assert "effect_size" in str(exc.value)
+
+
+class TestTheHoldoutFinding:
+    """A finding about v11 itself, surfaced by running verify against it.
+
+    W6's test period ended 2026-06-30; v11's original lock was 2026-07-23.
+    The validation window had concluded three weeks before registration, so
+    W6 was a holdout resting on attestation, not an embargo resting on the
+    data not yet existing. W8 (Sep-Oct 2026) was a genuine embargo. Nothing
+    in v11's own documents distinguishes them.
+    """
+
+    def _realistic_blocks(self):
+        registry = BlockRegistry()
+        spans = {
+            "W2": ("2025-07-01", "2025-09-01"),
+            "W3": ("2025-09-01", "2025-11-01"),
+            "W4": ("2025-11-01", "2026-01-01"),
+            "W5": ("2026-01-01", "2026-03-01"),
+            "W6": ("2026-05-01", "2026-07-01"),
+            "W7": ("2026-07-01", "2026-09-01"),
+            "W8": ("2026-09-01", "2026-11-01"),
+        }
+        for name, segment in [("W2", "S1"), ("W3", "S1"), ("W4", "S2"),
+                              ("W5", "S2"), ("W6", "V"), ("W7", "V"),
+                              ("W8", "V")]:
+            start, end = spans[name]
+            registry.add_block({
+                "id": name, "start": start, "end": end, "segment": segment,
+                "data_complete": True, "completed_at": "2026-07-15",
+                "sources": ["hl-node"], "seams": [],
+            })
+        return registry
+
+    def test_verify_reports_w6_as_a_holdout(self, entry):
+        import copy
+        import tempfile
+        from proofhouse.core.registry import Registry
+        from proofhouse.core.verify import verify_all
+
+        blocks = self._realistic_blocks()
+        registry = Registry(os.path.join(tempfile.mkdtemp(), "registry"),
+                            block_registry=blocks)
+        registry.register(copy.deepcopy(entry))
+
+        ok, findings = verify_all(registry=registry, block_registry=blocks)
+        temporal = [f for f in findings if f.check == "temporal"]
+
+        assert temporal, "the holdout/embargo distinction was not surfaced"
+        assert any("W6" in f.message for f in temporal)
+        assert all(f.severity == "warning" for f in temporal)
+
+    def test_w8_is_a_genuine_embargo_and_is_not_flagged(self, entry):
+        """Sep-Oct 2026 had not concluded at the 2026-07 lock, so peeking was
+        impossible. The check must distinguish it from W6 rather than
+        flagging every validation block."""
+        import copy
+        import tempfile
+        from proofhouse.core.registry import Registry
+        from proofhouse.core.verify import verify_all
+
+        blocks = self._realistic_blocks()
+        entry = copy.deepcopy(entry)
+        entry["validation_blocks"] = ["W8"]
+        registry = Registry(os.path.join(tempfile.mkdtemp(), "registry"),
+                            block_registry=blocks)
+        registry.register(entry)
+
+        ok, findings = verify_all(registry=registry, block_registry=blocks)
+        assert [f for f in findings if f.check == "temporal"] == []

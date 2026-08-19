@@ -210,16 +210,65 @@ class TestV2DanglingCitations:
 
 
 class TestV3TemporalEmbargo:
-    """V-3: a window that already existed at registration embargoes nothing."""
+    """V-3: an embargo and a holdout are not equal evidence.
 
-    def test_a_window_ending_before_the_entry_was_created_is_an_error(self):
+    * Embargo — the window had not finished at registration, so peeking was
+      physically impossible and the claim rests on nothing.
+    * Holdout — the window had concluded, so "it was not examined" rests
+      entirely on attestation.
+
+    The tool cannot adjudicate an attestation. It can refuse to let the weaker
+    case pass silently as the stronger one, which is a warning, not an error.
+
+    Found by running verify against the retro-filed v11 W6 entry: W6's test
+    period ended 2026-06-30 and v11's original lock was 2026-07-23.
+    """
+
+    def test_a_concluded_window_is_reported_as_a_holdout(self):
         root, registry = _project({
             "created_utc": "2026-07-22T00:00:00Z",
             "validation_blocks": ["B-OLD"],       # ends 2024-03-01
         })
         ok, findings = verify_all(registry=registry, block_registry=_blocks())
-        assert ok is False
-        assert _errors(findings, "temporal")
+
+        temporal = [f for f in findings if f.check == "temporal"]
+        assert temporal
+        assert temporal[0].severity == "warning"
+        assert "HOLDOUT" in temporal[0].message
+        assert "attestation" in temporal[0].message
+
+    def test_it_does_not_fail_the_verify(self):
+        """A retro-filed entry is a legitimate design, so this must not make
+        verify unusable on one. It must also not be silent."""
+        root, registry = _project({
+            "created_utc": "2026-07-22T00:00:00Z",
+            "validation_blocks": ["B-OLD"],
+        })
+        ok, _ = verify_all(registry=registry, block_registry=_blocks())
+        assert ok is True
+
+    def test_a_yaml_date_object_does_not_crash_the_comparison(self):
+        """YAML parses an unquoted 2026-07-01 into a date object, and
+        comparing that against a string raises rather than returning False."""
+        import datetime
+        blocks = _blocks()
+        blocks.add_block({
+            "id": "B-DATE", "start": datetime.date(2024, 1, 1),
+            "end": datetime.date(2024, 3, 1), "segment": "V",
+            "data_complete": True, "completed_at": "2024-03-15",
+            "sources": ["hl"], "seams": [],
+        })
+
+        registry = Registry(os.path.join(tempfile.mkdtemp(), "registry"),
+                            block_registry=blocks)
+        with open(FIXTURE) as fh:
+            entry = yaml.safe_load(fh)
+        entry["created_utc"] = "2026-07-22T00:00:00Z"
+        entry["validation_blocks"] = ["B-DATE"]
+        registry.register(entry)
+
+        ok, findings = verify_all(registry=registry, block_registry=blocks)
+        assert [f for f in findings if f.check == "temporal"]
 
     def test_a_window_ending_after_registration_is_fine(self):
         root, registry = _project({
