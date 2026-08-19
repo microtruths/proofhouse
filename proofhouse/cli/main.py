@@ -576,6 +576,48 @@ def fill(entry_id, field):
 
 
 @cli.command()
+@click.argument("entry_id")
+def report(entry_id):
+    """Render the findings memo for an entry's most recent gate."""
+    from proofhouse.chain.hashing import content_hash
+    from proofhouse.core.fill import compose_filled_entry
+    from proofhouse.core.gate import GateError, evaluate_gate
+    from proofhouse.core.report import build_report, render_text
+    from proofhouse.eval.types import ScoredResult
+
+    root = _get_root()
+    try:
+        entry = _registry(root).get_entry(entry_id)
+    except KeyError:
+        raise click.ClickException("No such entry: {}".format(entry_id))
+
+    manifest = _latest_manifest_for(root, entry_id)
+    if manifest is None:
+        raise click.ClickException(
+            "No manifest with a recorded result for {}. There is nothing to "
+            "report on.".format(entry_id))
+
+    fills = _fill_log(root).for_entry(entry_id)
+    effective = compose_filled_entry(entry, fills)
+    effective["hash"] = content_hash(effective)
+
+    scored = ScoredResult.from_dict(manifest["result"])
+    try:
+        verdict = evaluate_gate(
+            effective, {scored.statistic: scored},
+            block_registry=_get_block_registry(root))
+    except GateError as exc:
+        raise click.ClickException(str(exc))
+
+    click.echo(render_text(build_report(
+        effective, verdict,
+        ledger=_ledger(root),
+        amendments=_amendment_log(root).for_entry(entry_id),
+        fills=fills,
+    )))
+
+
+@cli.command()
 @click.option("--catalog", default=None,
               help="Path to failure-catalog.md, for resolving #N citations.")
 def verify(catalog):
