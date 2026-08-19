@@ -576,6 +576,49 @@ def fill(entry_id, field):
 
 
 @cli.command()
+@click.option("--catalog", default=None,
+              help="Path to failure-catalog.md, for resolving #N citations.")
+def verify(catalog):
+    """Full integrity check across every log, not just the chains."""
+    from proofhouse.core.verify import catalog_citation_resolver, verify_all
+
+    root = _get_root()
+    resolver = None
+    catalog_path = catalog or os.path.join(root, "failure-catalog.md")
+    if os.path.exists(catalog_path):
+        resolver = catalog_citation_resolver(catalog_path)
+
+    ok, findings = verify_all(
+        registry=_registry(root),
+        ledger=_ledger(root),
+        amendment_log=_amendment_log(root),
+        fill_log=_fill_log(root),
+        rejected_log=_rejected_log(root),
+        block_registry=_get_block_registry(root),
+        citation_resolver=resolver,
+    )
+
+    if resolver is None:
+        click.echo("note: no failure catalog found at {} — external "
+                   "citations are UNCHECKED, not verified.".format(
+                       catalog_path))
+
+    errors = [f for f in findings if f.severity == "error"]
+    warnings = [f for f in findings if f.severity == "warning"]
+
+    for finding in errors + warnings:
+        click.echo("  {}".format(finding))
+
+    click.echo("\n{} error(s), {} warning(s)".format(
+        len(errors), len(warnings)))
+    if ok:
+        click.echo("verify: OK")
+    else:
+        click.echo("verify: FAILED")
+        sys.exit(1)
+
+
+@cli.command()
 @click.argument("entry_id")
 @click.argument("amended_file")
 @click.option("--rationale", required=True, help="Why this change.")
