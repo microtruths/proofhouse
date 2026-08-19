@@ -208,8 +208,9 @@ worth knowing:
 - **Verify reports contested blocks.** If two live entries declare the same V
   block and neither has spent it, whichever gates first takes it and the other
   becomes permanently unrunnable — E4 makes V single-use. That is a warning
-  while the blocks are unspent and an error once they are not, because nothing
-  in the schema marks an entry as superseded.
+  while the blocks are unspent and an error once they are not — but only
+  between entries with no amendment relationship, since a successor taking
+  its parent's blocks is the intended path rather than a contest.
 - **An invalidating amendment on an ungated entry is now free**, where it used
   to cost scarce blocks. The report states the revision count for this reason.
   Whether repeated amendment should deflate the threshold the way exploration
@@ -356,7 +357,7 @@ that is where the original one lived.
 # Run all tests
 python -m pytest tests/ -v
 
-# 634 tests. The Phase 0 core:
+# 644 tests. The Phase 0 core:
 #   C-1…C-5:  Canonical serialization (byte-stability)
 #   H-1…H-4:  Hash chain (construction + tamper detection)
 #   B-1…B-9:  Block registry (consumption, seams, promotion, and the

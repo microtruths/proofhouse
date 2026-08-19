@@ -123,6 +123,27 @@ class Registry:
             queue.extend(self._entries[current].get("depends_on") or [])
         return seen
 
+    def _next_revision(self, entry):
+        """How many times this pre-registration has been invalidated, +1.
+
+        Counted from the LINEAGE, not from the entry's own amendments list.
+        That list is inherited or not depending on whether the caller built
+        the successor by copying the parent, so `len(amendments)` means two
+        different things for two successors that are otherwise identical —
+        and it under-reports, which is the wrong direction for a disclosure
+        whose whole job is to show accumulated forks.
+
+        Each ancestor's records already carry their own revision, so taking
+        the maximum and adding one is monotone and construction-independent.
+        """
+        highest = 0
+        for ancestor_id in self.ancestor_ids(entry):
+            for record in self._entries[ancestor_id].get("amendments") or []:
+                highest = max(highest, record.get("revision", 1))
+        for record in entry.get("amendments") or []:
+            highest = max(highest, record.get("revision", 0))
+        return highest + 1
+
     def _declared_by_ancestors(self, entry):
         """Every validation block named anywhere in this entry's lineage."""
         declared = set()
@@ -335,6 +356,7 @@ class Registry:
                         "current": result["current"],
                         "parent_id": dep_id,
                         "reused_blocks": sorted(reused),
+                        "revision": self._next_revision(entry),
                         "note": (
                             "{} changed from {} to {} after registration of "
                             "parent {}. Pre-registration invalidated; this "

@@ -331,15 +331,15 @@ class TestTheResolverAgainstTheRealCatalog:
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "failure-catalog.md")
 
-    def test_the_real_catalog_parses_to_30(self):
+    def test_the_real_catalog_parses_to_31(self):
         """Pinned to the real catalog's highest entry.
 
         Bump this when a catalog entry lands — the test failing on a new
-        entry is the pin working, not a regression. #30 landed 2026-08-19.
+        entry is the pin working, not a regression. #31 landed 2026-08-19.
         """
         resolver = catalog_citation_resolver(self.CATALOG)
         assert resolver is not None
-        assert resolver.highest == 30
+        assert resolver.highest == 31
 
     def test_emphasized_row_numbers_are_read(self):
         """'| **27** |' is the format that broke it."""
@@ -661,6 +661,7 @@ class TestAnEntryThatCanNeverGateSaysSo:
         assert len(warnings) == 2        # one per contested block
         assert all(w.severity == "warning" for w in warnings)
         assert "H-P, H-S" in warnings[0].message
+        assert "no amendment relationship" in warnings[0].message
 
     def test_one_claimant_is_not_contested(self):
         blocks = self._blocks()
@@ -686,3 +687,136 @@ class TestAnEntryThatCanNeverGateSaysSo:
             block_registry=blocks)
 
         assert not [f for f in findings if f.check == "runnable"]
+
+
+class TestSupersessionIsInferredFromDescent:
+    """The intended workflow must not leave a permanent error.
+
+    Amend P into S, then gate S — the correct path. Without descent
+    awareness, verify then errored on P forever: "P declares B1, which S has
+    already spent." True, useless, and unclearable, because nothing in the
+    schema marks P as superseded.
+
+    An error that can never clear is one people learn to skip. This tool has
+    now recorded that failure twice (catalog #29 and the R-block labelling
+    decision), and this is the third place it tried to appear.
+    """
+
+    def _blocks(self):
+        registry = BlockRegistry()
+        for name in ("B1", "B2"):
+            registry.add_block({
+                "id": name, "start": "2026-01-01", "end": "2026-03-01",
+                "segment": "V", "data_complete": True,
+                "completed_at": "2026-03-15", "sources": ["hl"], "seams": [],
+            })
+        return registry
+
+    def _entry(self, entry_id, vblocks, depends=()):
+        return {"id": entry_id, "schema_version": 1,
+                "created_utc": "2026-08-19T00:00:00Z",
+                "depends_on": list(depends),
+                "validation_blocks": list(vblocks)}
+
+    def _runnable(self, entries, blocks):
+        _, findings = verify_all(registry=_StubRegistry(entries),
+                                 block_registry=blocks)
+        return [f for f in findings if f.check == "runnable"]
+
+    def test_a_superseded_parent_is_not_reported(self):
+        blocks = self._blocks()
+        blocks.consume_block("B1", "H-S")
+        blocks.consume_block("B2", "H-S")
+
+        found = self._runnable(
+            [self._entry("H-P", ["B1", "B2"]),
+             self._entry("H-S", ["B1", "B2"], depends=["H-P"])], blocks)
+
+        assert found == [], [str(f) for f in found]
+
+    def test_supersession_is_transitive(self):
+        """P -> M -> S. S spends the blocks; P is still superseded."""
+        blocks = self._blocks()
+        blocks.consume_block("B1", "H-S")
+
+        found = self._runnable(
+            [self._entry("H-P", ["B1"]),
+             self._entry("H-M", ["B1"], depends=["H-P"]),
+             self._entry("H-S", ["B1"], depends=["H-M"])], blocks)
+
+        assert found == [], [str(f) for f in found]
+
+    def test_an_unrelated_spender_is_still_an_error(self):
+        """Descent is the exemption, not consumption itself."""
+        blocks = self._blocks()
+        blocks.consume_block("B1", "H-STRANGER")
+
+        found = self._runnable(
+            [self._entry("H-P", ["B1"]),
+             self._entry("H-STRANGER", ["B1"])], blocks)
+
+        errors = [f for f in found if f.severity == "error"]
+        assert len(errors) == 1
+        assert errors[0].where == "H-P"
+
+    def test_an_ancestor_spending_it_is_still_an_error(self):
+        """Direction matters. A successor cannot inherit blocks its PARENT
+        spent — that is the invalidating-amendment rule, and here it is
+        being reported after the fact rather than refused up front."""
+        blocks = self._blocks()
+        blocks.consume_block("B1", "H-P")
+
+        found = self._runnable(
+            [self._entry("H-P", ["B1"]),
+             self._entry("H-S", ["B1"], depends=["H-P"])], blocks)
+
+        errors = [f for f in found if f.severity == "error"]
+        assert len(errors) == 1
+        assert errors[0].where == "H-S"
+
+    def test_one_finding_per_pair_not_per_block(self):
+        """Six colliding blocks is one situation. Six identically-shaped
+        lines is how a reader learns to skim the section."""
+        blocks = self._blocks()
+        blocks.consume_block("B1", "H-STRANGER")
+        blocks.consume_block("B2", "H-STRANGER")
+
+        found = self._runnable(
+            [self._entry("H-P", ["B1", "B2"]),
+             self._entry("H-STRANGER", ["B1", "B2"])], blocks)
+
+        errors = [f for f in found if f.severity == "error"]
+        assert len(errors) == 1
+        assert "B1" in errors[0].message and "B2" in errors[0].message
+
+    def test_a_lineage_carrying_blocks_forward_does_not_warn(self):
+        """PFR1 -> PFR2 -> PFR3 all declaring the same six blocks is one
+        live hypothesis with a history, not three entries in contention.
+
+        Found against the real registry the first time this check met it —
+        six warnings on an ordinary amendment chain. Same false positive the
+        error branch had, in the branch that had not been fixed yet.
+        """
+        blocks = self._blocks()
+
+        found = self._runnable(
+            [self._entry("H-1", ["B1", "B2"]),
+             self._entry("H-2", ["B1", "B2"], depends=["H-1"]),
+             self._entry("H-3", ["B1", "B2"], depends=["H-2"])], blocks)
+
+        assert found == [], [str(f) for f in found]
+
+    def test_an_outsider_joining_a_lineage_still_warns(self):
+        """Suppression is per-claimant, not per-block: a lineage plus one
+        unrelated entry is still a genuine contest between two."""
+        blocks = self._blocks()
+
+        found = self._runnable(
+            [self._entry("H-1", ["B1"]),
+             self._entry("H-2", ["B1"], depends=["H-1"]),
+             self._entry("H-OTHER", ["B1"])], blocks)
+
+        warnings = [f for f in found if f.severity == "warning"]
+        assert len(warnings) == 1
+        assert "H-2, H-OTHER" in warnings[0].message
+        assert "H-1" not in warnings[0].message

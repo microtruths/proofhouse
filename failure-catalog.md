@@ -87,6 +87,13 @@ Errors were made by every participant: the human's plan drafts, the primary revi
 > declaration-only check for the wrong reason, and only failed once the check started reading
 > consumption. **A test can encode the bug it was written to prevent.**
 
+| **31** | **A new check reported the CORRECT workflow as broken — and fixing it in one branch left the identical bug in the sibling branch.** `_check_runnable` was added to warn that an entry's validation blocks had been spent by something else. It had no notion of supersession, so the intended path — amend P into S, then gate S — left a permanent error on P: *"P declares B1, which S has already spent."* True, useless, and unclearable, since nothing in the schema retires an entry. Descent was then used as the supersession signal and the **error** branch was fixed. The **warning** branch, four lines below, kept the same blindness: an ordinary PFR1 → PFR2 → PFR3 chain produced six warnings that three entries were contesting blocks none had spent. Found only by running against the live registry, where another session had just built exactly that chain. | The #30 remediation (2026-08-19), reviewed the same day | Probing the intended workflow rather than the failure it was written for; then running the fixed check against real records rather than synthesized ones | **A check that fires on correct usage is worse than no check** — this is the third time this tool has produced an unclearable alarm (cf. #29 and the R-block labelling decision), and the pull toward it is that the check reads as more rigorous. Second, and newer: **when a predicate is wrong, fix every branch that shares it in the same pass.** The error and warning arms of one function were written together, reviewed together, and only one was corrected, because the test that caught the first case did not exercise the second. |
+
+> **Entry #31 provenance.** Found 2026-08-19 auditing #30's fix, hours after it was pushed.
+> The warning-branch half was invisible to every synthesized test and obvious on first contact
+> with the real registry — the same way #28's cry-wolf bug and the citation resolver's #25 bug
+> were both found. **Synthesized fixtures agree with whatever the author was already thinking.**
+
 ## Process lessons (meta)
 
 - **Review the diff AND the whole.** Several errors (#17, stale "200 draws" counts, a rejected-suggestion entry contradicting an adopted rule) were merge debris invisible to diff-only review.

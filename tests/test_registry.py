@@ -4,6 +4,7 @@ Integration tests for the full registration flow:
 validate → hash → chain → persist → reload → verify.
 """
 
+import copy
 import os
 import tempfile
 
@@ -341,3 +342,66 @@ class TestFreshBlocksMeansUNSPENTNotUNDECLARED:
         assert "fresh blocks" not in note
         assert "unconsumed" in note
         assert "B1" in note
+
+
+class TestRevisionCountsTheLineage:
+    """`len(amendments)` means two things for two identical successors.
+
+    The list is inherited or not depending on whether the caller built the
+    successor by copying the parent, so a three-deep lineage reported
+    "revision 1" when the successor happened to be built fresh. That
+    under-reports, which is the wrong direction for a disclosure whose whole
+    job is to show accumulated forks.
+    """
+
+    def _setup(self):
+        blocks = BlockRegistry()
+        for i in range(1, 5):
+            blocks.add_block({
+                "id": "B{}".format(i), "start": "2026-01-01",
+                "end": "2026-03-01", "segment": "V", "data_complete": True,
+                "completed_at": "2026-03-15", "sources": ["hl"], "seams": [],
+            })
+        registry = Registry(os.path.join(tempfile.mkdtemp(), "registry"),
+                            block_registry=blocks)
+        return registry, blocks
+
+    def _entry(self, entry_id, vblocks, effect, depends=()):
+        entry = _make_valid_entry(entry_id)
+        entry["validation_blocks"] = list(vblocks)
+        entry["mechanism"]["expected_effect_size"] = effect
+        entry["depends_on"] = list(depends)
+        return entry
+
+    def test_revision_increments_along_the_chain(self):
+        registry, _ = self._setup()
+        registry.register(self._entry("H-A", ["B1"], "1.2"))
+        b = registry.register(self._entry("H-B", ["B2"], "5.5",
+                                          depends=["H-A"]))
+        c = registry.register(self._entry("H-C", ["B3"], "9.9",
+                                          depends=["H-B"]))
+
+        assert b["amendments"][0]["revision"] == 1
+        assert c["amendments"][0]["revision"] == 2
+
+    def test_the_count_does_not_depend_on_how_the_successor_was_built(self):
+        """A successor deepcopied from its parent inherits the amendments
+        list; one built fresh does not. The revision must not care."""
+        registry, _ = self._setup()
+        registry.register(self._entry("H-A2", ["B1"], "1.2"))
+        parent = registry.register(self._entry("H-B2", ["B2"], "5.5",
+                                               depends=["H-A2"]))
+
+        copied = copy.deepcopy(parent)
+        copied.update({"id": "H-C2", "depends_on": ["H-B2"],
+                       "validation_blocks": ["B3"]})
+        copied["mechanism"]["expected_effect_size"] = "9.9"
+        copied.pop("hash", None)
+        copied.pop("prev", None)
+        from_copy = registry.register(copied)
+
+        fresh = registry.register(self._entry("H-D2", ["B4"], "7.7",
+                                              depends=["H-B2"]))
+
+        assert max(a["revision"] for a in from_copy["amendments"]) == 2
+        assert max(a["revision"] for a in fresh["amendments"]) == 2

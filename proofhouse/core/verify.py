@@ -209,6 +209,34 @@ def _check_blocks(block_registry, findings):
                     ack.get("rationale"))))
 
 
+def _ancestry(entries):
+    """{entry_id: every id it descends from, transitively}.
+
+    Registry.ancestor_ids does the same walk against the live registry; this
+    one runs over a list of records, because verify is given entries rather
+    than a Registry. Both are cycle-safe by a seen set.
+    """
+    by_id = {e.get("id"): e for e in entries}
+    resolved = {}
+
+    def walk(entry_id, seen):
+        if entry_id in resolved:
+            return resolved[entry_id]
+        if entry_id in seen or entry_id not in by_id:
+            return set()
+        seen = seen | {entry_id}
+        out = set()
+        for parent in by_id[entry_id].get("depends_on") or []:
+            out.add(parent)
+            out |= walk(parent, seen)
+        resolved[entry_id] = out
+        return out
+
+    for entry in entries:
+        walk(entry.get("id"), set())
+    return resolved
+
+
 def _check_runnable(entries, block_registry, findings):
     """An entry that can never gate should say so before you try.
 
@@ -237,7 +265,14 @@ def _check_runnable(entries, block_registry, findings):
     if block_registry is None:
         return
 
+    ancestors = _ancestry(entries)
+
     claimants = {}
+    # {(entry_id, spender): [blocks]} — one finding per pair rather than one
+    # per block. An entry colliding on six blocks is one situation, and six
+    # identically-shaped lines is how a reader learns to skim the section.
+    collisions = {}
+
     for entry in entries:
         entry_id = entry.get("id", "?")
         for block_id in entry.get("validation_blocks") or []:
@@ -247,23 +282,47 @@ def _check_runnable(entries, block_registry, findings):
                 block = block_registry.get_block(block_id)
             except KeyError:
                 continue        # V-8 / E6 territory, not this check's
-            if block.get("segment") not in ("V",):
+            if block.get("segment") != "V":
                 continue
-            spenders = [c.get("entry_id")
-                        for c in block.get("consumed_by") or []
-                        if c.get("entry_id") != entry_id]
-            if spenders:
-                findings.append(Finding(
-                    "runnable", "error", entry_id,
-                    "declares validation block {}, which entry {} has "
-                    "already spent. E4 makes V-blocks single-use, so this "
-                    "entry can never be gated on it — the refusal is "
-                    "guaranteed and arrives only when you try.".format(
-                        block_id, ", ".join(sorted(set(spenders))))))
+            for consumption in block.get("consumed_by") or []:
+                spender = consumption.get("entry_id")
+                if spender == entry_id:
+                    continue
+                # SUPERSESSION, INFERRED FROM THE ONE SIGNAL THERE IS.
+                #
+                # If the spender descends from this entry, this entry was
+                # amended into it and the successor took the blocks — the
+                # intended path, not a collision. Without this the correct
+                # workflow (amend, then gate the successor) left a permanent
+                # error on every superseded parent, and an error that can
+                # never clear is one people learn to skip. Same failure this
+                # tool has now recorded twice.
+                if entry_id in ancestors.get(spender, set()):
+                    continue
+                collisions.setdefault((entry_id, spender), []).append(block_id)
+
+    for (entry_id, spender), block_ids in sorted(collisions.items()):
+        findings.append(Finding(
+            "runnable", "error", entry_id,
+            "declares validation block(s) {}, already spent by entry {}, "
+            "which is not a descendant of it. E4 makes V-blocks single-use, "
+            "so this entry can never be gated on them — the refusal is "
+            "guaranteed and arrives only when you try.".format(
+                sorted(block_ids), spender)))
 
     for block_id in sorted(claimants):
-        entry_ids = sorted(set(claimants[block_id]))
-        if len(entry_ids) < 2:
+        entry_ids = set(claimants[block_id])
+        # A claimant that some other claimant descends from was amended into
+        # it, so it is not contesting anything — the successor is the live
+        # one and the record says so. Without this, the ordinary
+        # amend-then-amend-again chain warned on every block it carried
+        # forward, which is the same false positive the error branch had and
+        # for the same reason.
+        contenders = sorted(
+            e for e in entry_ids
+            if not any(e in ancestors.get(other, set())
+                       for other in entry_ids if other != e))
+        if len(contenders) < 2:
             continue
         try:
             block = block_registry.get_block(block_id)
@@ -273,10 +332,11 @@ def _check_runnable(entries, block_registry, findings):
             continue        # already spent — reported as an error above
         findings.append(Finding(
             "runnable", "warning", block_id,
-            "claimed as a validation block by {} entries ({}), and spent by "
-            "none of them. Whichever gates first takes it and the others "
-            "become unrunnable. Nothing in the record says which is the live "
-            "one.".format(len(entry_ids), ", ".join(entry_ids))))
+            "claimed as a validation block by {} entries with no amendment "
+            "relationship ({}), and spent by none of them. Whichever gates "
+            "first takes it and the others become unrunnable. Nothing in the "
+            "record says which is the live one.".format(
+                len(contenders), ", ".join(contenders))))
 
 
 def _check_temporal(entries, block_registry, findings):

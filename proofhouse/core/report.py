@@ -189,7 +189,12 @@ def _non_claims(entry, verdict):
     # should DEFLATE the threshold the way exploration runs do is a real
     # question and a separate one; the amendment log holds what such a rule
     # would need.
-    revisions = len(entry.get("amendments") or [])
+    # From the recorded revision number, not len(amendments): that list is
+    # inherited or not depending on how the successor was built, so its
+    # length under-reports a long lineage. The registry stamps `revision`
+    # from the ancestry.
+    records = entry.get("amendments") or []
+    revisions = max([r.get("revision", 1) for r in records] or [0])
     if revisions:
         claims.append(
             "This is revision {} of a pre-registration whose effect size or "

@@ -368,8 +368,8 @@ class TestTheLineageRevisionCount:
         entry, verdict = w6
         entry = dict(entry)
         entry["amendments"] = [
-            {"field": "expected_effect_size", "parent_id": "H-A"},
-            {"field": "signal.parameters.polarity", "parent_id": "H-B"},
+            {"field": "expected_effect_size", "parent_id": "H-B",
+             "revision": 2},
         ]
 
         report = build_report(entry, verdict)
@@ -377,6 +377,20 @@ class TestTheLineageRevisionCount:
 
         assert "revision 2" in claims
         assert "does not currently charge" in claims
+
+    def test_the_number_comes_from_the_record_not_the_list_length(self, w6):
+        """A successor built fresh carries one amendment record for a
+        lineage that has forked twice. Counting the list would report 1."""
+        entry, verdict = w6
+        entry = dict(entry)
+        entry["amendments"] = [
+            {"field": "expected_effect_size", "parent_id": "H-C",
+             "revision": 4},
+        ]
+
+        report = build_report(entry, verdict)
+
+        assert "revision 4" in " ".join(report["non_claims"])
 
     def test_an_original_registration_says_nothing(self, w6):
         entry, verdict = w6
