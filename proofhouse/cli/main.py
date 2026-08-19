@@ -641,8 +641,9 @@ def report(entry_id):
     from proofhouse.eval.types import ScoredResult
 
     root = _get_root()
+    registry = _registry(root)
     try:
-        entry = _registry(root).get_entry(entry_id)
+        entry = registry.get_entry(entry_id)
     except KeyError:
         raise click.ClickException("No such entry: {}".format(entry_id))
 
@@ -664,12 +665,20 @@ def report(entry_id):
     except GateError as exc:
         raise click.ClickException(str(exc))
 
+    # The lineage, not just this entry. An entry whose own amendment was
+    # ordinary carries an empty `amendments` list while its ancestors carry
+    # the invalidation, so the revision disclosure reads zero unless the
+    # ancestry is supplied.
+    ancestors = [registry.get_entry(a)
+                 for a in sorted(registry.ancestor_ids(entry))]
+
     click.echo(render_text(build_report(
         effective, verdict,
         ledger=_ledger(root),
         amendments=_amendment_log(root).for_entry(entry_id),
         fills=fills,
         scored_results={scored.statistic: scored},
+        ancestors=ancestors,
     )))
 
 

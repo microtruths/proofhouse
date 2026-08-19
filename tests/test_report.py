@@ -397,3 +397,58 @@ class TestTheLineageRevisionCount:
         report = build_report(entry, verdict)
 
         assert "revision" not in " ".join(report["non_claims"])
+
+    def test_an_ancestors_invalidation_is_disclosed(self, w6):
+        """THE LIVE REGRESSION. `amendments` is appended only in the
+        invalidating branch, so an entry whose own amendment was ordinary
+        carries an empty list while its ancestor carries the invalidation.
+
+        PFR1 -> PFR2 -> PFR3 in the real registry: PFR2 holds the
+        invalidating record, PFR3 holds none. Reading the local list
+        disclosed zero forks for a chain that had one — and went silent on
+        exactly the chain where it matters most, since PFR2 is the entry
+        that reused blocks under the fresh-block rule and this disclosure is
+        what pays for allowing that.
+        """
+        entry, verdict = w6
+        entry = dict(entry, depends_on=["H-PARENT"], amendments=[])
+        parent = {"id": "H-PARENT",
+                  "amendments": [{"field": "expected_effect_size",
+                                  "revision": 1}]}
+
+        report = build_report(entry, verdict, ancestors=[parent])
+
+        assert "revision 1" in " ".join(report["non_claims"])
+
+    def test_a_missing_lineage_is_UNKNOWN_not_zero(self, w6):
+        """An unanswered question must not render as a reassuring answer —
+        the same reasoning as the multiplicity section's NOT AVAILABLE."""
+        entry, verdict = w6
+        entry = dict(entry, depends_on=["H-PARENT"], amendments=[])
+
+        report = build_report(entry, verdict)          # no ancestors
+        claims = " ".join(report["non_claims"])
+
+        assert "UNKNOWN rather than zero" in claims
+        assert "H-PARENT" in claims
+
+    def test_an_entry_with_no_parents_says_nothing(self, w6):
+        entry, verdict = w6
+        report = build_report(entry, verdict, ancestors=[])
+        claims = " ".join(report["non_claims"])
+
+        assert "revision" not in claims
+        assert "UNKNOWN rather than zero" not in claims
+
+    def test_a_record_without_a_revision_field_counts_as_one(self, w6):
+        """Records written before `revision` existed carry no such key —
+        PFR2's does not. Treating that as no revision at all would silence
+        the disclosure on precisely the historical entries it is for."""
+        entry, verdict = w6
+        entry = dict(entry, depends_on=["H-PARENT"], amendments=[])
+        parent = {"id": "H-PARENT",
+                  "amendments": [{"field": "expected_effect_size"}]}
+
+        report = build_report(entry, verdict, ancestors=[parent])
+
+        assert "revision 1" in " ".join(report["non_claims"])

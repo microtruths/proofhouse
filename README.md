@@ -212,7 +212,9 @@ worth knowing:
   between entries with no amendment relationship, since a successor taking
   its parent's blocks is the intended path rather than a contest.
 - **An invalidating amendment on an ungated entry is now free**, where it used
-  to cost scarce blocks. The report states the revision count for this reason.
+  to cost scarce blocks. The report states the revision count for this reason,
+  counted across the whole lineage — the invalidation is recorded on whichever
+  ancestor was amended, not on the entry you are reporting on.
   Whether repeated amendment should deflate the threshold the way exploration
   runs do is a real question and an open one.
 
@@ -357,7 +359,7 @@ that is where the original one lived.
 # Run all tests
 python -m pytest tests/ -v
 
-# 644 tests. The Phase 0 core:
+# 648 tests. The Phase 0 core:
 #   C-1…C-5:  Canonical serialization (byte-stability)
 #   H-1…H-4:  Hash chain (construction + tamper detection)
 #   B-1…B-9:  Block registry (consumption, seams, promotion, and the

@@ -36,7 +36,7 @@ from proofhouse.core.gate_run import foreclosure_advisory
 
 
 def build_report(entry, verdict, ledger=None, amendments=None, fills=None,
-                 errata=None, scored_results=None):
+                 errata=None, scored_results=None, ancestors=None):
     """Assemble the report structure. No rendering, no I/O.
 
     Args:
@@ -50,6 +50,11 @@ def build_report(entry, verdict, ledger=None, amendments=None, fills=None,
             against. Required for the benchmark sweep — the sweep lives on
             ScoredResult, not on the verdict, because it is a property of the
             measurement rather than of the comparison.
+        ancestors: The registered entries this one descends from. Required to
+            count how often the pre-registration has been invalidated: that
+            record lives on whichever ancestor was amended, not on this
+            entry. Omitting it on an entry with depends_on is reported as
+            UNKNOWN, never as zero.
 
     Returns:
         Dict with every committed content element.
@@ -117,7 +122,7 @@ def build_report(entry, verdict, ledger=None, amendments=None, fills=None,
             "licenses_apply": verdict.passed,
         },
         "errata": list(errata or []),
-        "non_claims": _non_claims(entry, verdict),
+        "non_claims": _non_claims(entry, verdict, ancestors),
     }
 
 
@@ -163,7 +168,7 @@ def _power_section(entry):
     }
 
 
-def _non_claims(entry, verdict):
+def _non_claims(entry, verdict, ancestors=None):
     """What this result does not show, stated whether or not it passed."""
     claims = []
     if not verdict.passed:
@@ -189,13 +194,32 @@ def _non_claims(entry, verdict):
     # should DEFLATE the threshold the way exploration runs do is a real
     # question and a separate one; the amendment log holds what such a rule
     # would need.
-    # From the recorded revision number, not len(amendments): that list is
-    # inherited or not depending on how the successor was built, so its
-    # length under-reports a long lineage. The registry stamps `revision`
-    # from the ancestry.
-    records = entry.get("amendments") or []
-    revisions = max([r.get("revision", 1) for r in records] or [0])
-    if revisions:
+    # WALK THE LINEAGE, NOT THE LOCAL LIST.
+    #
+    # `amendments` is appended only inside the INVALIDATING branch, so an
+    # entry whose own amendment was ordinary carries an empty list while its
+    # ancestors carry the invalidation. Reading the local list reported zero
+    # forks for a chain that had one — and it went silent on exactly the
+    # chain where it matters most, since the entry that reused blocks under
+    # the fresh-block rule is the one this disclosure exists to pay for.
+    #
+    # `revision` may be absent on records written before it existed; treat
+    # that as 1 rather than as no revision at all.
+    records = list(entry.get("amendments") or [])
+    for ancestor in ancestors or []:
+        records.extend(ancestor.get("amendments") or [])
+    revisions = max([(r.get("revision") or 1) for r in records] or [0])
+
+    if ancestors is None and entry.get("depends_on"):
+        # Silence here would read as "no revisions" for a chain that has
+        # them. Same reasoning as the multiplicity section's NOT AVAILABLE:
+        # an unanswered question must not render as a reassuring answer.
+        claims.append(
+            "This entry descends from {}, and no lineage was supplied to the "
+            "report, so the number of times its pre-registration has been "
+            "invalidated is UNKNOWN rather than zero.".format(
+                ", ".join(entry["depends_on"])))
+    elif revisions:
         claims.append(
             "This is revision {} of a pre-registration whose effect size or "
             "direction changed after the original was filed. Each such "

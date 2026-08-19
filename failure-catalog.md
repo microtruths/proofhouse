@@ -93,6 +93,16 @@ Errors were made by every participant: the human's plan drafts, the primary revi
 > The warning-branch half was invisible to every synthesized test and obvious on first contact
 > with the real registry — the same way #28's cry-wolf bug and the citation resolver's #25 bug
 > were both found. **Synthesized fixtures agree with whatever the author was already thinking.**
+>
+> **A THIRD site of the same predicate**, reported by the research chat the same day and fixed
+> alongside: `report.py` counted revisions from the entry's OWN `amendments` list. That list is
+> appended only in the invalidating branch, so an entry whose own amendment was ordinary carries
+> an empty list while its ancestor carries the invalidation — the disclosure read zero forks for
+> a chain that had one. It went silent on H-2026-PFR3, i.e. on precisely the chain where it
+> matters most, since PFR2 is the entry that reused blocks under #30's new rule and this
+> disclosure is the compensating reader that pays for allowing that. Twice now the fix for
+> "walk the lineage" has been applied to the stamper and not to the reader. **Grep for every
+> caller of the fact, not every caller of the function.**
 
 ## Process lessons (meta)
 
