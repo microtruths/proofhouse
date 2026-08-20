@@ -464,11 +464,18 @@ class TestASignFlipAcrossBenchmarksIsReported:
     {benchmark: alpha}. So a memo could print a sweep that spanned zero and
     say nothing. Derived here from the alphas already being printed, so the
     flag cannot disagree with the numbers beside it.
+
+    §2.3: THE PRIMARY IS IN THE SPAN, and it was not. The check therefore
+    could not fire on the case it exists for — a positive primary against
+    two negative alternatives — because the only number the primary
+    benchmark contributed was missing from the set. The fixture's primary
+    statistic is `s2_median_gross_bps` and its benchmark is
+    `s1-alpha-ranked-cohort`, so the span is keyed by that name.
     """
 
-    def _with_sweep(self, sweep):
+    def _with_sweep(self, sweep, primary=-10729.0):
         return {"s2_median_gross_bps": ScoredResult(
-            "s2_median_gross_bps", -10729.0, 4, benchmark_results=sweep)}
+            "s2_median_gross_bps", primary, 4, benchmark_results=sweep)}
 
     def test_a_sweep_spanning_zero_is_flagged_and_rendered(self, w6):
         entry, verdict = w6
@@ -483,27 +490,79 @@ class TestASignFlipAcrossBenchmarksIsReported:
     def test_same_signed_alphas_do_not_flag(self, w6):
         """THE CRY-WOLF DIRECTION. A mandatory warning that always fires is
         a warning nobody reads — how the first cut of the block check and
-        the citation resolver both failed."""
+        the citation resolver both failed.
+
+        "Same signed" now has to include the primary, which is the point of
+        the fix: agreement among the alternatives while the primary
+        disagrees is not agreement."""
         entry, verdict = w6
         report = build_report(entry, verdict, scored_results=self._with_sweep(
-            {"btc-subtraction": 577.0, "oi-weighted-index": 412.0}))
+            {"btc-subtraction": -577.0, "oi-weighted-index": -412.0}))
 
         assert report["benchmark"]["sign_flipped"] is False
         assert "SIGN FLIP" not in render_text(report)
         assert not any("depends on the benchmark chosen" in c
                        for c in report["non_claims"])
 
-    def test_both_negative_does_not_flag(self, w6):
+    def test_a_positive_primary_against_negative_alternatives_flips(self, w6):
+        """§2.3's case, and the reason the check was worth fixing rather than
+        deleting: this shape trips nothing at all when the primary is left
+        out of the span, and it is precisely §2.2.1's finding — one benchmark
+        positive, another negative, on the same data."""
+        entry, verdict = w6
+        report = build_report(entry, verdict, scored_results=self._with_sweep(
+            {"s0-broad-pool": -577.0, "s6-sign-randomized": -599.0},
+            primary=577.0))
+
+        assert report["benchmark"]["sign_flipped"] is True
+        assert report["benchmark"]["sign_flip_span"][
+            "s1-alpha-ranked-cohort"] == 577.0
+        text = render_text(report)
+        assert "SIGN FLIP ACROSS BENCHMARKS" in text
+        # The span is printed, primary marked, so a reader can check it.
+        assert "s1-alpha-ranked-cohort  (primary): 577.0" in text
+
+    def test_both_negative_including_the_primary_does_not_flag(self, w6):
         """Consistently negative is a consistent answer, not a flip."""
         entry, verdict = w6
         report = build_report(entry, verdict, scored_results=self._with_sweep(
             {"a": -577.0, "b": -599.0}))
         assert report["benchmark"]["sign_flipped"] is False
 
-    def test_a_single_benchmark_cannot_flip(self, w6):
+    def test_a_single_alternative_agreeing_with_the_primary_does_not_flip(
+            self, w6):
+        entry, verdict = w6
+        report = build_report(entry, verdict,
+                              scored_results=self._with_sweep({"a": -577.0}))
+        assert report["benchmark"]["sign_flipped"] is False
+
+    def test_a_single_alternative_disagreeing_with_the_primary_flips(self, w6):
+        """One alternative IS enough, now that the primary is in the span.
+        Two numbers of opposite sign is a sign flip whether or not both are
+        alternatives."""
         entry, verdict = w6
         report = build_report(entry, verdict,
                               scored_results=self._with_sweep({"a": 577.0}))
+        assert report["benchmark"]["sign_flipped"] is True
+
+    def test_an_unrun_sweep_does_not_put_the_primary_in_a_span_of_one(
+            self, w6):
+        """One number cannot span zero, and folding the primary in when
+        nothing was swept would make the span look like a sweep.
+        `sweep_missing` stays the finding that catches an unrun sweep."""
+        entry, verdict = w6
+        report = build_report(entry, verdict,
+                              scored_results=self._with_sweep({}))
+        assert report["benchmark"]["sign_flip_span"] == {}
+        assert report["benchmark"]["sweep_missing"] is True
+
+    def test_an_infeasible_primary_is_not_read_as_a_zero(self, w6):
+        """A missing number must not be read as a sign. NaN is
+        infeasibility, which the gate counts as a loss — not as a negative
+        alpha that makes every one-sided sweep span zero."""
+        entry, verdict = w6
+        report = build_report(entry, verdict, scored_results=self._with_sweep(
+            {"a": 577.0, "b": 412.0}, primary=float("nan")))
         assert report["benchmark"]["sign_flipped"] is False
 
     def test_an_unrun_sweep_is_not_a_clean_sweep(self, w6):
@@ -515,3 +574,207 @@ class TestASignFlipAcrossBenchmarksIsReported:
         assert report["benchmark"]["sign_flipped"] is False
         assert report["benchmark"]["sweep_missing"] is True
         assert "SENSITIVITY SWEEP MISSING" in render_text(report)
+
+
+class TestTheMemoReadsTheRecordedVerdict:
+    """§2.2 point 6. `report` ignored the recorded gate row entirely and
+    re-derived the verdict from whichever manifest was newest, so the memo
+    could state a verdict no ledger row records — and editing a manifest
+    changed what it printed with every chain verifying clean.
+
+    Recompute-and-compare is strictly stronger than either half: reading the
+    row alone prints a verdict nothing re-derives, recomputing alone is what
+    the tool already did wrong.
+    """
+
+    ENTRY = {
+        "id": "H-2026-AC10",
+        "hash": "h0",
+        "created_utc": "2026-08-19T00:00:00Z",
+        "universe": {"id": "hl-perps-wallets"},
+        "validation_blocks": [],
+        "pass_licenses": "A 6-week shadow trial.",
+        "pass_does_not_establish": "Deployable alpha.",
+        "gate": {
+            "statistic": "ic",
+            "combination": "g1",
+            "criteria": {"g1": {"comparator": ">=",
+                                "threshold": {"literal": "0.05"}}},
+        },
+    }
+
+    def _bound(self, value=0.038898, **kw):
+        from tests.bound_eval import project, record_eval
+        ledger, manifests = project()
+        scored = ScoredResult("ic", value, 14)
+        run_id = record_eval(ledger, manifests, dict(self.ENTRY), scored, **kw)
+        return ledger, manifests, run_id
+
+    def test_a_bound_verdict_is_read_and_recomputed(self):
+        from proofhouse.core.gate_run import run_gate
+        from proofhouse.core.report import bind_verdict
+
+        ledger, manifests, run_id = self._bound()
+        recorded, gate_id = run_gate(dict(self.ENTRY), run_id, ledger,
+                                     manifests)
+
+        verdict, results, provenance = bind_verdict(
+            dict(self.ENTRY), ledger, manifests)
+
+        assert provenance["status"] == "bound"
+        assert provenance["gate_run_id"] == gate_id
+        assert provenance["source_eval_run_id"] == run_id
+        assert verdict.to_dict() == recorded.to_dict()
+        assert results["ic"].value == 0.038898
+
+    def test_the_memo_states_the_binding(self):
+        from proofhouse.core.gate_run import run_gate
+        from proofhouse.core.report import bind_verdict
+
+        ledger, manifests, run_id = self._bound()
+        run_gate(dict(self.ENTRY), run_id, ledger, manifests)
+        verdict, results, provenance = bind_verdict(
+            dict(self.ENTRY), ledger, manifests)
+
+        text = render_text(build_report(
+            dict(self.ENTRY), verdict, scored_results=results,
+            provenance=provenance))
+
+        assert "--- Provenance ---" in text
+        assert "BOUND." in text
+        assert run_id in text
+
+    def test_a_tampered_manifest_refuses_and_names_the_manifest(self):
+        from proofhouse.core.gate_run import run_gate
+        from proofhouse.core.report import ReportRefused, bind_verdict
+        from tests.bound_eval import tamper
+
+        ledger, manifests, run_id = self._bound()
+        run_gate(dict(self.ENTRY), run_id, ledger, manifests)
+        tamper(manifests, run_id, value="0.9")
+
+        with pytest.raises(ReportRefused) as exc:
+            bind_verdict(dict(self.ENTRY), ledger, manifests)
+
+        assert "THE SIDE THAT MOVED IS THE MANIFEST" in str(exc.value)
+
+    def test_a_legacy_gate_row_still_renders_and_says_it_is_unverifiable(self):
+        """R-000013 predates every new field, and `proofhouse report
+        H-2026-PFR4` has to keep working. Refusing here would make the tool
+        unable to report on its own history, which is not integrity."""
+        from proofhouse.core.report import bind_verdict
+
+        ledger, manifests, run_id = self._bound(digests=False)
+        ledger.append_row(
+            code_hash="c1", data_hash="d1", universe="hl-perps-wallets",
+            kind="gate", blocks_touched=[], stats_scored=["ic"],
+            registry_ref="H-2026-AC10", outcome="fail", entry_hash="h0")
+
+        verdict, results, provenance = bind_verdict(
+            dict(self.ENTRY), ledger, manifests)
+
+        assert provenance["status"] == "unverifiable"
+        assert verdict.passed is False
+        text = render_text(build_report(
+            dict(self.ENTRY), verdict, scored_results=results,
+            provenance=provenance))
+        assert "UNVERIFIABLE." in text
+        assert "verdict: FAIL" in text
+
+    def test_a_legacy_row_may_still_gate_on_a_metadata_statistic(self):
+        """PFR4's g2 reads mean_net_bps_per_event, which lives in the
+        immutable manifest's metadata and always will. The memo renders it
+        and states the gap; what nothing does is record a NEW verdict from
+        it."""
+        from proofhouse.core.report import bind_verdict
+        from tests.bound_eval import project, record_eval
+
+        entry = {
+            "id": "H-2026-PFR4-LIKE",
+            "hash": "h0",
+            "universe": {"id": "hl-perps"},
+            "validation_blocks": [],
+            "gate": {
+                "statistic": "clustered_t_stat",
+                "combination": "g1 and g2",
+                "criteria": {
+                    "g1": {"comparator": ">=",
+                           "threshold": {"literal": "2.923"}},
+                    "g2": {"statistic": "mean_net_bps_per_event",
+                           "comparator": ">=", "threshold": {"literal": "25"}},
+                },
+            },
+        }
+        ledger, manifests = project()
+        scored = ScoredResult(
+            "clustered_t_stat", 1.8617105276654804, 1,
+            metadata={"mean_net_bps_per_event": 46.42003773745695})
+        record_eval(ledger, manifests, entry, scored, digests=False)
+        ledger.append_row(
+            code_hash="c1", data_hash="d1", universe="hl-perps", kind="gate",
+            blocks_touched=[], stats_scored=["clustered_t_stat",
+                                             "mean_net_bps_per_event"],
+            registry_ref=entry["id"], outcome="fail", entry_hash="h0")
+
+        verdict, results, provenance = bind_verdict(entry, ledger, manifests)
+
+        assert provenance["status"] == "unverifiable"
+        assert verdict.passed is False
+        outcomes = {c.name: c for c in verdict.criteria}
+        assert outcomes["g1"].actual == "1.8617105276654804"
+        assert outcomes["g2"].actual == "46.420037737456951"
+        assert outcomes["g2"].passed is True
+
+    def test_no_gate_row_at_all_is_not_a_recorded_decision(self):
+        """A memo computed on the spot must not read as a record of a
+        decision that was taken."""
+        from proofhouse.core.report import bind_verdict
+
+        ledger, manifests, run_id = self._bound()
+        verdict, results, provenance = bind_verdict(
+            dict(self.ENTRY), ledger, manifests)
+
+        assert provenance["status"] == "unrecorded"
+        assert "NOT a record of a decision" in provenance["note"]
+
+    def test_nothing_to_report_on_refuses(self):
+        from proofhouse.core.report import ReportRefused, bind_verdict
+        from tests.bound_eval import project
+
+        ledger, manifests = project()
+        with pytest.raises(ReportRefused):
+            bind_verdict(dict(self.ENTRY), ledger, manifests)
+
+    def test_a_decision_row_outranks_a_replay(self):
+        """A kind='maintenance' replay re-renders a verdict a gate row
+        already recorded, so the decision row is the one the memo is
+        about."""
+        from proofhouse.core.gate_run import run_gate
+        from proofhouse.core.report import bind_verdict
+
+        ledger, manifests, run_id = self._bound()
+        _, gate_id = run_gate(dict(self.ENTRY), run_id, ledger, manifests)
+        run_gate(dict(self.ENTRY), run_id, ledger, manifests,
+                 kind="maintenance")
+
+        _, _, provenance = bind_verdict(dict(self.ENTRY), ledger, manifests)
+        assert provenance["gate_run_id"] == gate_id
+
+    def test_a_report_without_provenance_says_so(self):
+        """build_report may be called with results assembled by hand — in
+        tests, and by anything that predates bind_verdict. Silence there
+        would let such a memo read as though its verdict came from the
+        record."""
+        report = build_report(dict(self.ENTRY), _AlwaysFail())
+        assert report["provenance"]["status"] == "unverifiable"
+        assert "No provenance was supplied" in report["provenance"]["note"]
+
+
+class _AlwaysFail:
+    """The smallest thing shaped like a Verdict, for the provenance default."""
+    entry_id = "H-2026-AC10"
+    combination = "g1"
+    criteria = []
+    passed = False
+    pass_licenses = None
+    pass_does_not_establish = None

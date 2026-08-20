@@ -33,6 +33,7 @@ def _full():
         n_effective_basis="one wallet cross-section",
         benchmark_results={"btc-subtraction": 0.0577,
                            "market-index": -0.0599},
+        secondary_statistics={"mean_net_bps_per_event": 46.42003773745695},
         metadata={"n": 4431, "se": 0.015},
     )
 
@@ -51,6 +52,7 @@ class TestRoundTrip:
         assert restored.n_effective == original.n_effective
         assert restored.n_effective_basis == original.n_effective_basis
         assert restored.benchmark_results == original.benchmark_results
+        assert restored.secondary_statistics == original.secondary_statistics
         assert restored.metadata == original.metadata
 
     def test_round_trip_is_exact_not_approximate(self):
@@ -98,6 +100,20 @@ class TestCanonicalForm:
         assert isinstance(d["value"], str)
         assert isinstance(d["p_value"], str)
         assert all(isinstance(v, str) for v in d["benchmark_results"].values())
+        assert all(isinstance(v, str)
+                   for v in d["secondary_statistics"].values())
+
+    def test_a_secondary_statistic_keeps_every_digit(self):
+        """It is compared against a registered threshold, so the whole
+        argument for decimal strings applies to it — and it is the field's
+        reason for existing. The live case: mean_net_bps_per_event
+        46.42003773745695 against a literal 25, which spent six validation
+        blocks. Pinned to what to_dict RETURNS: '%.17g' of that double."""
+        d = _full().to_dict()
+        assert d["secondary_statistics"]["mean_net_bps_per_event"] == (
+            "46.420037737456951")
+        assert ScoredResult.from_dict(d).secondary_statistics[
+            "mean_net_bps_per_event"] == 46.42003773745695
 
     def test_counts_stay_integers(self):
         d = _full().to_dict()
@@ -119,8 +135,53 @@ class TestCanonicalForm:
         d = _full().to_dict()
         assert set(d) == {
             "statistic", "value", "trial_count", "p_value", "n_effective",
-            "n_effective_basis", "benchmark_results", "metadata",
+            "n_effective_basis", "benchmark_results", "secondary_statistics",
+            "metadata",
         }
+
+
+class TestASecondaryStatisticIsFirstClass:
+    """§2.1(a). A gate criterion read its second statistic out of `metadata`,
+    which to_dict deliberately does not canonicalize — licensed by "nothing
+    in it is compared against a threshold, so no verdict can turn on an ulp
+    of it." Reading a criterion out of it revoked that licence.
+    """
+
+    def test_none_survives_as_not_computed(self):
+        """Same rule as p_value: 'not computed' is a distinct state. A gate
+        asking for it must refuse on infeasibility, not compare a guess."""
+        original = ScoredResult("panel_ic", 0.03, 14,
+                                secondary_statistics={"turnover": None})
+        restored = ScoredResult.from_dict(original.to_dict())
+        assert restored.secondary_statistics == {"turnover": None}
+
+    def test_absent_and_empty_are_the_same_thing(self):
+        assert ScoredResult("panel_ic", 0.03, 14).secondary_statistics == {}
+        assert ScoredResult.from_dict(
+            {"statistic": "panel_ic", "value": "0.03",
+             "trial_count": 14}).secondary_statistics == {}
+
+    def test_it_may_not_restate_the_primary(self):
+        """Two representations of one number is how they come to disagree."""
+        with pytest.raises(ValueError) as exc:
+            ScoredResult("panel_ic", 0.03, 14,
+                         secondary_statistics={"panel_ic": 0.04})
+        assert "primary" in str(exc.value)
+
+    def test_a_bool_is_refused_at_construction(self):
+        """Python compares True as 1.0, so a bool would pass a `>= 1` gate on
+        something that was never a measurement. evaluate_gate refuses one at
+        the comparison; refusing here means it never reaches a manifest."""
+        with pytest.raises(ValueError):
+            ScoredResult("panel_ic", 0.03, 14,
+                         secondary_statistics={"beat": True})
+
+    def test_a_corrupt_secondary_raises_rather_than_guessing(self):
+        data = _full().to_dict()
+        data["secondary_statistics"]["mean_net_bps_per_event"] = "n/a"
+        with pytest.raises(ValueError) as exc:
+            ScoredResult.from_dict(data)
+        assert "secondary_statistics" in str(exc.value)
 
 
 class TestGateReadsAManifestResult:

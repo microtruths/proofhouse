@@ -75,7 +75,8 @@ proofhouse register fixtures/agentcopy_v10_ic_gate.yaml
 # Fill a field registered as pending, from its pinned rule
 proofhouse fill H-2026-AC10 power_check
 
-# Render the gate. Exits non-zero on a fail.
+# Render the gate against this entry's latest recorded eval run.
+# Exits non-zero on a fail.
 proofhouse gate H-2026-AC10
 
 # Check status
@@ -92,11 +93,11 @@ proofhouse status
 | `proofhouse explore -u <universe>` | Log an exploration run (fast — <5s) |
 | `proofhouse register <file>` | Validate, hash, chain, and register a hypothesis |
 | `proofhouse fill <id> <field>` | Fill a pending field from its pinned rule. Once only |
-| `proofhouse gate <id>` | Render the pre-committed gate; append a `gate` ledger row |
+| `proofhouse gate <id> [--source-run <run>] [--replay]` | Render the pre-committed gate against a recorded eval run; append a `gate` ledger row |
 | `proofhouse amend <id> <file> --rationale --impact` | File an amendment: record and successor entry, together or not at all |
 | `proofhouse reject --idea --reason` | Record a rejected idea so a later partial adoption shows |
-| `proofhouse verify` | Full integrity check across every log. Exits non-zero on error |
-| `proofhouse report <id>` | Render the findings memo |
+| `proofhouse verify` | Full integrity check across every log. Exits non-zero on error; reports `unverifiable` separately |
+| `proofhouse report <id>` | Render the findings memo from the recorded verdict. Refuses if the record and a recomputation disagree |
 | `proofhouse status` | Show trial counts, block consumption, pending fields |
 
 `gate` exits non-zero on a fail, so it composes into a script without the
@@ -175,6 +176,47 @@ Two situations that look alike and are handled oppositely:
 
 Conflating them in the permissive direction manufactures false negatives that
 look like evidence.
+
+### The result is bound to the verdict
+
+*This exact registered entry, evaluated in this exact run, produced these exact
+numbers, which produced this exact verdict.* Every link in that sentence used
+to be loose: `run_gate` took caller-supplied results with no source check,
+`save_manifest` wrote plain YAML that nothing referenced the digest of, the
+gate row recorded `pass`/`fail` and nothing else, and `report` re-derived the
+verdict from whichever manifest was newest. Editing a manifest therefore
+changed what `proofhouse report` printed while every hash chain still verified
+clean.
+
+What holds it now:
+
+- **`run_gate` takes a `source_run_id`, not numbers.** The eval row must exist,
+  belong to this entry, and carry the digests written when it ran; the result
+  is read from that row's manifest and re-checked against them.
+- **The manifest is hashed.** `result_hash` (the numbers) and `manifest_hash`
+  (the provenance around them) go on the eval ledger row, which is chained — so
+  editing the file contradicts a record that cannot be edited without breaking
+  every row after it.
+- **The gate row records `source_eval_run_id`, `result_hash` and the exact
+  criterion outcomes**, as canonical decimal strings.
+- **`report` reads the recorded row, recomputes from the bound result, and
+  refuses on disagreement**, naming which side moved: the manifest (digest
+  mismatch) or the gate engine (same numbers, different comparison). A
+  deliberate engine change needs a stated procedure — re-render and record, or
+  read the historical verdict through the tool that rendered it — or this
+  refusal becomes the check people route around.
+- **At most one decision-grade gate per (entry, source run).** A gate row is
+  written only after a verdict is reached, so one already existing means the
+  decision is recorded. An explicit replay is permitted as
+  `proofhouse gate <id> --replay`, logged as `kind=maintenance` and excluded
+  from the multiplicity count.
+
+A gating statistic must be **first-class**. A multi-criterion gate used to read
+its second statistic out of `result.metadata`, which is deliberately not
+canonicalized — licensed by "nothing in it is compared against a threshold, so
+no verdict can turn on an ulp of it." A criterion reading it revoked that
+licence, so `ScoredResult.secondary_statistics` now carries such values,
+canonicalized like the primary, and the gate refuses a metadata value.
 
 ## Amendments and the re-run lock
 
@@ -340,6 +382,20 @@ verifies clean at the chain level while being wrong:
 - a block labelled *untouched* sitting beside a list of things that touched it
 - an entry whose validation blocks something else already spent, so it can
   never be gated and will not find out until it tries
+- a manifest whose numbers no longer match the digest recorded when the run
+  produced them, or a verdict whose recorded criteria cite values that manifest
+  does not hold
+
+### Three severities, not two
+
+`verify` returns **errors** (integrity failures — exit non-zero), **warnings**
+(checked, and the evidence is weaker than it looks — a holdout rather than an
+embargo), and **unverifiable** (this record predates the check, so it cannot be
+checked at all). The third is its own class deliberately. As an error, verify
+never returns 0 again and a permanently failing check is one people learn to
+skip; as a warning, "we could not check this" sits among findings that mean "we
+checked"; as silence, an unverifiable record reads as a verified one. Only
+errors fail the run.
 
 The last one is a distinction worth naming. An **embargo** means the window had
 not finished at registration, so peeking was impossible and the claim rests on

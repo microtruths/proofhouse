@@ -48,6 +48,17 @@ class ScoredResult:
     the decision. Storing it in metadata would quietly contradict this
     type's own contract and reopen the A4 boundary Phase 1a closed.
 
+    secondary_statistics is the same argument, made a third time, for the
+    case that actually arrived. A multi-criterion gate names more than one
+    statistic and a manifest stores ONE result, so the second criterion's
+    number was read out of `metadata` — and metadata is deliberately NOT
+    canonicalized, on the stated grounds that "nothing in it is compared
+    against a threshold, so no verdict can turn on an ulp of it." That
+    justification stopped being true the moment a gate criterion read it.
+    This type's own comment already named the remedy: *"The moment
+    something in metadata does feed a decision, it belongs in a first-class
+    field instead."* This is that field.
+
     Attributes:
         statistic: Name of the primary statistic (e.g., 'dsr', 'panel_ic').
         value: The primary statistic value.
@@ -61,13 +72,18 @@ class ScoredResult:
         n_effective_basis: Prose stating what one independent unit is.
         benchmark_results: Dict of {benchmark_name: alpha_value} from the
             mandatory sensitivity sweep. Empty if not applicable.
+        secondary_statistics: Dict of {name: value} for every OTHER
+            statistic this run computed that a gate criterion may compare
+            against a registered threshold. Canonicalized exactly like
+            `value`, because a verdict can turn on an ulp of it.
         metadata: Dict of non-diagnostic metadata (n, SE, etc.) that is
             part of the result but not part of the gate decision.
     """
 
     def __init__(self, statistic, value, trial_count,
                  p_value=None, n_effective=None, n_effective_basis=None,
-                 benchmark_results=None, metadata=None):
+                 benchmark_results=None, secondary_statistics=None,
+                 metadata=None):
         """Initialize a scored result.
 
         Args:
@@ -78,12 +94,16 @@ class ScoredResult:
             n_effective: Optional number of independent units.
             n_effective_basis: Required prose when n_effective is set.
             benchmark_results: Optional dict of benchmark sensitivity results.
+            secondary_statistics: Optional dict of {name: value} for other
+                gate-evaluable statistics from the same run.
             metadata: Optional dict of non-diagnostic metadata.
 
         Raises:
             ValueError: If p_value is outside [0, 1], if n_effective is not
-                a positive integer, or if n_effective is set without a
-                non-empty n_effective_basis.
+                a positive integer, if n_effective is set without a
+                non-empty n_effective_basis, or if secondary_statistics is
+                malformed (non-string key, non-numeric value, or a name that
+                collides with the primary statistic).
         """
         if p_value is not None:
             if not (0.0 <= p_value <= 1.0):
@@ -111,6 +131,37 @@ class ScoredResult:
                     "N is independent units, not row count)".format(n_effective)
                 )
 
+        secondary = dict(secondary_statistics or {})
+        for name, secondary_value in sorted(secondary.items()):
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(
+                    "secondary_statistics keys must be statistic names; "
+                    "got {!r}".format(name)
+                )
+            if name == statistic:
+                raise ValueError(
+                    "secondary_statistics may not repeat the primary "
+                    "statistic {!r}. Two representations of one number is how "
+                    "they come to disagree — the gate reads `value` for the "
+                    "primary.".format(statistic)
+                )
+            if secondary_value is None:
+                # "Not computed" is a real state and is preserved, exactly as
+                # p_value=None is. A gate asking for it will refuse on
+                # infeasibility rather than silently comparing a guess.
+                continue
+            if isinstance(secondary_value, bool) or not isinstance(
+                    secondary_value, (int, float)):
+                # A bool would compare as 1.0 against a threshold — a verdict
+                # rendered against something that was never a measurement.
+                # evaluate_gate refuses one at the comparison; refusing it at
+                # construction means it never reaches a manifest.
+                raise ValueError(
+                    "secondary_statistics[{!r}] is {!r}; a gate-evaluable "
+                    "statistic must be a real number or None".format(
+                        name, secondary_value)
+                )
+
         self.statistic = statistic
         self.value = value
         self.trial_count = trial_count
@@ -118,6 +169,7 @@ class ScoredResult:
         self.n_effective = n_effective
         self.n_effective_basis = n_effective_basis
         self.benchmark_results = benchmark_results or {}
+        self.secondary_statistics = secondary
         self.metadata = metadata or {}
 
     def to_dict(self):
@@ -151,6 +203,12 @@ class ScoredResult:
             "n_effective": self.n_effective,
             "n_effective_basis": self.n_effective_basis,
             "benchmark_results": _canonicalize(self.benchmark_results),
+            # Canonicalized for the same reason `value` is, and it is the
+            # same reason twice: these numbers are compared against
+            # registered thresholds. Before this field existed they lived in
+            # metadata, where a YAML round-trip could move them by an ulp
+            # under a strict comparison.
+            "secondary_statistics": _canonicalize(self.secondary_statistics),
             # metadata is deliberately NOT canonicalized.
             #
             # It is an open dict of arbitrary values, so encoding its floats
@@ -165,6 +223,12 @@ class ScoredResult:
             # of it. The moment something in metadata does feed a decision, it
             # belongs in a first-class field instead, which is the same
             # argument that pulled p_value out of metadata in Phase 1a.
+            #
+            # That moment arrived: a multi-criterion gate read its second
+            # statistic out of metadata. `secondary_statistics` above is the
+            # promised first-class field, and statistics_from_result now
+            # refuses to gate on a metadata value. The sentence stands as
+            # written — it just has a second worked example.
             "metadata": self.metadata,
         }
 
@@ -192,6 +256,24 @@ class ScoredResult:
                         key, raw)
                 )
 
+        # None inside the mapping survives, for the same reason p_value's
+        # does: "not computed" is a distinct state from any number, and a
+        # gate asking for it must refuse rather than compare a guess. A
+        # missing mapping and an empty one are the same thing — absent means
+        # no secondary statistic was recorded.
+        secondary = {}
+        for name, raw in (data.get("secondary_statistics") or {}).items():
+            if raw is None:
+                secondary[name] = None
+                continue
+            try:
+                secondary[name] = float(raw)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "manifest result secondary_statistics[{!r}] is not a "
+                    "number: {!r}".format(name, raw)
+                )
+
         return cls(
             statistic=data.get("statistic"),
             value=_num("value"),
@@ -203,6 +285,7 @@ class ScoredResult:
                 k: float(v)
                 for k, v in (data.get("benchmark_results") or {}).items()
             },
+            secondary_statistics=secondary,
             metadata=data.get("metadata") or {},
         )
 

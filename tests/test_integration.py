@@ -17,6 +17,8 @@ will either fail or (worse) pass without enforcing the check.
 import os
 import tempfile
 
+import pytest
+
 
 # A toy strategy artifact for integration testing
 _TOY_STRATEGY = '''
@@ -533,3 +535,212 @@ class TestRunEval:
             block = br.get_block("v-block")
             assert len(block.get("consumed_by", [])) == 0, \
                 "Contaminated run should not consume blocks"
+
+
+class TestTheResultIsBoundToTheVerdict:
+    """The invariant, end to end: *this exact registered entry, evaluated in
+    this exact run, produced these exact numbers, which produced this exact
+    verdict.*
+
+    Every link used to be loose. run_gate took caller-supplied results with
+    no source check; save_manifest wrote plain YAML that nothing referenced
+    the digest of; the gate row recorded pass/fail and nothing else; report
+    ignored the gate row and re-derived from the newest manifest; verify
+    never opened a manifest at all. So editing R-000012.yaml changed what
+    `proofhouse report` printed and every hash chain still verified clean.
+
+    This is the test that says otherwise, through the orchestrators rather
+    than by assembling the steps here — the #26-one-level-up lesson.
+    """
+
+    def _evaluated(self, tmpdir):
+        """run_eval through the orchestrator. Returns everything downstream
+        needs."""
+        from proofhouse.eval.runner import run_eval
+
+        entry, adapter, br, ledger, registry, manifests_dir = \
+            _setup_infrastructure(tmpdir)
+        result = run_eval(
+            entry=entry, adapter=adapter, block_registry=br, ledger=ledger,
+            stage=1, score_fn=_make_score_fn(), manifests_dir=manifests_dir,
+            seed=42,
+        )
+        # The REGISTERED entry, with its hash — what the CLI gates against.
+        # Gating the in-memory dict instead leaves entry_hash off the row,
+        # and check_amendment_ordering reads exactly that field.
+        return (registry.get_entry(entry["id"]), br, ledger, registry,
+                manifests_dir, result)
+
+    def test_the_eval_row_carries_the_result_into_the_chain(self):
+        from proofhouse.core.manifest import manifest_digest, result_digest
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            entry, br, ledger, registry, manifests_dir, result = \
+                self._evaluated(tmpdir)
+
+            row = ledger.all_rows()[-1]
+            assert row["result_hash"] == result_digest(
+                result.manifest["result"])
+            assert row["manifest_hash"] == manifest_digest(result.manifest)
+            ok, errors = ledger.verify()
+            assert ok, errors
+
+    def test_the_outcome_string_is_exact_not_rounded(self):
+        """The live eval row says `clustered_t_stat=1.861711` for a value of
+        1.8617105276654804 — six digits of a number whose comparison against
+        2.923 was the verdict. A rounded restatement of a hashed number can
+        only ever disagree with it."""
+        from proofhouse.chain.canonical import decimal_str
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            entry, br, ledger, registry, manifests_dir, result = \
+                self._evaluated(tmpdir)
+
+            row = ledger.all_rows()[-1]
+            assert row["outcome"] == "panel_ic={}".format(
+                decimal_str(result.scored.value))
+            assert row["outcome"].endswith(result.manifest["result"]["value"])
+
+    def test_gate_and_report_agree_through_the_record(self):
+        from proofhouse.core.gate_run import run_gate
+        from proofhouse.core.report import bind_verdict, render_text, \
+            build_report
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            entry, br, ledger, registry, manifests_dir, result = \
+                self._evaluated(tmpdir)
+
+            verdict, gate_run_id = run_gate(
+                entry, result.run_id, ledger, manifests_dir, block_registry=br)
+
+            bound, results, provenance = bind_verdict(
+                entry, ledger, manifests_dir, block_registry=br)
+
+            assert provenance["status"] == "bound"
+            assert provenance["gate_run_id"] == gate_run_id
+            assert provenance["source_eval_run_id"] == result.run_id
+            assert bound.to_dict() == verdict.to_dict()
+            text = render_text(build_report(
+                entry, bound, scored_results=results, provenance=provenance))
+            assert "BOUND" in text
+
+    def test_verify_is_clean_on_a_bound_record(self):
+        """THE CRY-WOLF DIRECTION, checked first. A check that fires on a
+        correct record is one people learn to skip — how the first cut of the
+        block check and the citation resolver both failed.
+
+        Scoped to the manifests check. This fixture is deliberately minimal
+        and declares an EXPLORATION block as its validation block, which V-8
+        errors on — a property of the fixture that predates this check and is
+        not what is under test here.
+        """
+        from proofhouse.core.gate_run import run_gate
+        from proofhouse.core.verify import verify_all
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            entry, br, ledger, registry, manifests_dir, result = \
+                self._evaluated(tmpdir)
+            run_gate(entry, result.run_id, ledger, manifests_dir,
+                     block_registry=br)
+
+            ok, findings = verify_all(
+                registry=registry, ledger=ledger, block_registry=br,
+                manifests_dir=manifests_dir)
+
+            manifests = [f for f in findings if f.check == "manifests"]
+            assert manifests == [], [str(f) for f in manifests]
+            # Nothing UNVERIFIABLE either: a record written by the current
+            # tool is checkable, and saying "cannot check" about it would be
+            # the same cry-wolf failure one class over.
+            assert [f for f in findings if f.severity == "unverifiable"] == []
+
+    def test_THE_TAMPER_TEST(self):
+        """Edit the manifest's result: verify FAILS and report REFUSES.
+
+        §6: "the tamper test, which is the point of the whole change". Before
+        it, both passed clean on exactly this edit.
+        """
+        import yaml
+
+        from proofhouse.core.gate_run import run_gate
+        from proofhouse.core.report import ReportRefused, bind_verdict
+        from proofhouse.core.verify import verify_all
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            entry, br, ledger, registry, manifests_dir, result = \
+                self._evaluated(tmpdir)
+            run_gate(entry, result.run_id, ledger, manifests_dir,
+                     block_registry=br)
+
+            # The edit. The gate is panel_ic > 0.05 and this fixture clears
+            # it, so the tamper moves the recorded number to one that would
+            # not have — the mirror of the fail-into-pass case, caught by the
+            # same digest, because the check is on the record agreeing with
+            # itself and not on which way the verdict went.
+            path = os.path.join(manifests_dir,
+                                "{}.yaml".format(result.run_id))
+            with open(path) as fh:
+                manifest = yaml.safe_load(fh)
+            assert float(manifest["result"]["value"]) > 0.05
+            manifest["result"]["value"] = "0.01"
+            with open(path, "w") as fh:
+                yaml.dump(manifest, fh, default_flow_style=False,
+                          sort_keys=True)
+
+            # 1. verify FAILS, and says the file is what moved.
+            ok, findings = verify_all(
+                registry=registry, ledger=ledger, block_registry=br,
+                manifests_dir=manifests_dir)
+            errors = [f for f in findings if f.severity == "error"]
+            assert ok is False
+            assert any("the file is what moved" in f.message for f in errors)
+            # And the verdict is caught independently of the digest: the
+            # recorded criterion no longer matches the numbers on disk.
+            assert any("no longer the comparison the record describes"
+                       in f.message for f in errors)
+
+            # 2. report REFUSES, and names the side that moved.
+            with pytest.raises(ReportRefused) as exc:
+                bind_verdict(entry, ledger, manifests_dir, block_registry=br)
+            assert "THE SIDE THAT MOVED IS THE MANIFEST" in str(exc.value)
+
+    def test_a_gate_engine_change_is_refused_and_named(self):
+        """D-3's other direction, and the one that needs a stated procedure:
+        recompute-and-refuse fires on any deliberate gate-engine change. The
+        recorded row is edited here in place of shipping a different engine —
+        what the check compares is the record against the recomputation, and
+        this is the cheapest way to make them disagree with the manifest
+        intact."""
+        import json
+
+        from proofhouse.core.gate_run import run_gate
+        from proofhouse.core.report import ReportRefused, bind_verdict
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            entry, br, ledger, registry, manifests_dir, result = \
+                self._evaluated(tmpdir)
+            run_gate(entry, result.run_id, ledger, manifests_dir,
+                     block_registry=br)
+
+            # Rewrite the recorded verdict as though a different engine had
+            # rendered it. The ledger chain now breaks too — which is the
+            # point: this is not a thing that can be done quietly.
+            path = os.path.join(tmpdir, "ledger.jsonl")
+            lines = open(path).read().splitlines()
+            row = json.loads(lines[-1])
+            was = row["criteria"][0]["passed"]
+            row["criteria"][0]["passed"] = not was
+            row["outcome"] = "fail" if was else "pass"
+            lines[-1] = json.dumps(row, sort_keys=True,
+                                   separators=(",", ":"))
+            with open(path, "w") as fh:
+                fh.write("\n".join(lines) + "\n")
+
+            from proofhouse.core.ledger import Ledger
+            reloaded = Ledger(path)
+            with pytest.raises(ReportRefused) as exc:
+                bind_verdict(entry, reloaded, manifests_dir,
+                             block_registry=br)
+            assert "THE SIDE THAT MOVED IS THE GATE ENGINE" in str(exc.value)
+            assert "criterion g1 passed: recorded {!r}, now {!r}".format(
+                not was, was) in str(exc.value)

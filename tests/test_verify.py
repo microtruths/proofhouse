@@ -820,3 +820,265 @@ class TestSupersessionIsInferredFromDescent:
         assert len(warnings) == 1
         assert "H-2, H-OTHER" in warnings[0].message
         assert "H-1" not in warnings[0].message
+
+
+class TestTheManifestCrossChecks:
+    """§2.2 point 5. `verify_all` never opened a manifest.
+
+    The chains proved nobody edited a ROW; the file holding the numbers a
+    verdict was rendered against sat outside them entirely, so editing
+    R-000012.yaml changed what `proofhouse report` printed and every chain
+    still verified clean.
+    """
+
+    def _bound(self, value=0.038898, **kw):
+        """A registered entry with a bound eval run. Returns everything
+        verify_all needs plus the source run_id."""
+        from proofhouse.eval.types import ScoredResult
+        from tests.bound_eval import project, record_eval
+
+        root, registry = _project()
+        entry = registry.list_entries()[0]
+        ledger, manifests = project()
+        scored = ScoredResult("ic", value, 14)
+        run_id = record_eval(ledger, manifests, entry, scored, **kw)
+        return registry, ledger, manifests, entry, run_id
+
+    def _gate_row(self, ledger, entry, run_id, manifests, **overrides):
+        """Record a gate row the way run_gate does, so a test can then move
+        one field of it and nothing else."""
+        from proofhouse.core.gate_run import run_gate
+        run_gate(entry, run_id, ledger, manifests,
+                 block_registry=_blocks(), **overrides)
+        return ledger.all_rows()[-1]
+
+    def _unverifiable(self, findings):
+        return [f for f in findings if f.severity == "unverifiable"]
+
+    def test_a_bound_record_is_clean(self):
+        """The cry-wolf direction first."""
+        registry, ledger, manifests, entry, run_id = self._bound()
+        self._gate_row(ledger, entry, run_id, manifests)
+
+        ok, findings = verify_all(registry=registry, ledger=ledger,
+                                  block_registry=_blocks(),
+                                  manifests_dir=manifests)
+        assert [f for f in findings if f.check == "manifests"] == []
+        assert ok, [str(f) for f in findings]
+
+    def test_an_edited_manifest_is_an_error(self):
+        """THE TAMPER TEST at the verify layer. The row is chained, so the
+        file is what moved."""
+        from tests.bound_eval import tamper
+
+        registry, ledger, manifests, entry, run_id = self._bound()
+        self._gate_row(ledger, entry, run_id, manifests)
+        tamper(manifests, run_id, value="0.9")
+
+        ok, findings = verify_all(registry=registry, ledger=ledger,
+                                  block_registry=_blocks(),
+                                  manifests_dir=manifests)
+        assert ok is False
+        assert _errors(findings, "manifests")
+
+    def test_an_edited_manifest_also_contradicts_the_recorded_criteria(self):
+        """Two independent detections of one edit, which is what makes the
+        check hard to work around: the digest, and the values the verdict was
+        rendered against."""
+        from tests.bound_eval import tamper
+
+        registry, ledger, manifests, entry, run_id = self._bound()
+        self._gate_row(ledger, entry, run_id, manifests)
+        tamper(manifests, run_id, value="0.9")
+
+        _, findings = verify_all(registry=registry, ledger=ledger,
+                                 block_registry=_blocks(),
+                                 manifests_dir=manifests)
+        messages = " ".join(f.message for f in _errors(findings, "manifests"))
+        assert "the file is what moved" in messages
+        assert "no longer the comparison the record describes" in messages
+
+    def test_a_missing_manifest_for_a_digested_row_is_an_error(self):
+        registry, ledger, manifests, entry, run_id = self._bound()
+        os.remove(os.path.join(manifests, "{}.yaml".format(run_id)))
+
+        ok, findings = verify_all(registry=registry, ledger=ledger,
+                                  block_registry=_blocks(),
+                                  manifests_dir=manifests)
+        assert ok is False
+        assert "not a result" in " ".join(
+            f.message for f in _errors(findings, "manifests"))
+
+    def test_a_legacy_row_is_unverifiable_not_clean_and_not_an_error(self):
+        """D-2, and the invariant that keeps `verify` usable: R-000012 has no
+        digest and R-000013 no source run. As errors, verify never returns 0
+        again and a permanently failing check is one people learn to skip. As
+        silence, an unverifiable record reads as a verified one."""
+        registry, ledger, manifests, entry, run_id = self._bound(digests=False)
+        # A legacy gate row too: pass/fail, an entry_hash, and nothing else.
+        # R-000013 is exactly this row.
+        ledger.append_row(
+            code_hash="c1", data_hash="d1", universe="hl-perps-wallets",
+            kind="gate", blocks_touched=[], stats_scored=["ic"],
+            registry_ref=entry["id"], outcome="fail",
+            entry_hash=entry.get("hash"))
+
+        ok, findings = verify_all(registry=registry, ledger=ledger,
+                                  block_registry=_blocks(),
+                                  manifests_dir=manifests)
+
+        assert ok is True
+        assert _errors(findings, "manifests") == []
+        assert [f.severity for f in findings if f.check == "manifests"] == [
+            "unverifiable", "unverifiable"]
+
+    def test_unverifiable_is_not_a_warning(self):
+        """"We could not check this" and "we checked, and the evidence is
+        weaker than it looks" are different states. The live registry carries
+        24 of the second; folding the first in with them would put the two
+        readings behind one number."""
+        registry, ledger, manifests, entry, run_id = self._bound(digests=False)
+        _, findings = verify_all(registry=registry, ledger=ledger,
+                                 block_registry=_blocks(),
+                                 manifests_dir=manifests)
+        assert [f for f in findings
+                if f.check == "manifests" and f.severity == "warning"] == []
+
+    def test_digests_recorded_but_not_compared_is_unverifiable(self):
+        """Supplying no manifests directory must not read as a pass."""
+        registry, ledger, manifests, entry, run_id = self._bound()
+        _, findings = verify_all(registry=registry, ledger=ledger,
+                                 block_registry=_blocks())
+        assert self._unverifiable(findings)
+        assert _errors(findings, "manifests") == []
+
+    def test_a_gate_row_citing_a_run_that_does_not_exist_is_an_error(self):
+        registry, ledger, manifests, entry, run_id = self._bound()
+        ledger.append_row(
+            code_hash="c1", data_hash="d1", universe="hl-perps-wallets",
+            kind="gate", blocks_touched=[], stats_scored=["ic"],
+            registry_ref=entry["id"], outcome="fail",
+            source_eval_run_id="R-000999", result_hash="sha256:aaa",
+            criteria=[{"name": "g1", "statistic": "ic", "actual": "0.0",
+                       "passed": False}])
+
+        ok, findings = verify_all(registry=registry, ledger=ledger,
+                                  block_registry=_blocks(),
+                                  manifests_dir=manifests)
+        assert ok is False
+        assert "never happened" in " ".join(
+            f.message for f in _errors(findings, "manifests"))
+
+    def test_a_gate_row_citing_another_entrys_run_is_an_error(self):
+        registry, ledger, manifests, entry, run_id = self._bound(
+            registry_ref="H-2026-SOMEONE-ELSE")
+        ledger.append_row(
+            code_hash="c1", data_hash="d1", universe="hl-perps-wallets",
+            kind="gate", blocks_touched=[], stats_scored=["ic"],
+            registry_ref=entry["id"], outcome="fail",
+            source_eval_run_id=run_id,
+            result_hash=ledger.all_rows()[0]["result_hash"],
+            criteria=[{"name": "g1", "statistic": "ic",
+                       "actual": "0.038898000000000002", "passed": False}])
+
+        ok, findings = verify_all(registry=registry, ledger=ledger,
+                                  block_registry=_blocks(),
+                                  manifests_dir=manifests)
+        assert ok is False
+        assert "a run of its own entry" in " ".join(
+            f.message for f in _errors(findings, "manifests"))
+
+    def test_a_gate_row_with_fresh_hashes_is_an_error(self):
+        """The gate row reuses the eval's (code_hash, data_hash) so the dedup
+        does not count it as a second trial. A different pair inflates the
+        multiplicity count that every threshold reads from."""
+        registry, ledger, manifests, entry, run_id = self._bound()
+        source = ledger.all_rows()[0]
+        ledger.append_row(
+            code_hash="a-fresh-hash", data_hash="another", universe=(
+                entry.get("universe") or {}).get("id"),
+            kind="gate", blocks_touched=[], stats_scored=["ic"],
+            registry_ref=entry["id"], outcome="fail",
+            source_eval_run_id=run_id, result_hash=source["result_hash"],
+            criteria=[{"name": "g1", "statistic": "ic",
+                       "actual": "0.038898000000000002", "passed": False}])
+
+        ok, findings = verify_all(registry=registry, ledger=ledger,
+                                  block_registry=_blocks(),
+                                  manifests_dir=manifests)
+        assert ok is False
+        assert "inflates the multiplicity count" in " ".join(
+            f.message for f in _errors(findings, "manifests"))
+
+    def test_a_verdict_on_a_statistic_the_result_never_carried(self):
+        registry, ledger, manifests, entry, run_id = self._bound()
+        source = ledger.all_rows()[0]
+        ledger.append_row(
+            code_hash="c1", data_hash="d1", universe="hl-perps-wallets",
+            kind="gate", blocks_touched=[], stats_scored=["invented"],
+            registry_ref=entry["id"], outcome="pass",
+            source_eval_run_id=run_id, result_hash=source["result_hash"],
+            criteria=[{"name": "g1", "statistic": "invented",
+                       "actual": "9.9", "passed": True}])
+
+        ok, findings = verify_all(registry=registry, ledger=ledger,
+                                  block_registry=_blocks(),
+                                  manifests_dir=manifests)
+        assert ok is False
+        assert "not in the bound record" in " ".join(
+            f.message for f in _errors(findings, "manifests"))
+
+    def test_a_gate_row_spending_an_unconsumed_block_is_an_error(self):
+        """The block registry is what enforces E4 single-use. A gate row
+        claiming it spent a block the registry records no consumption of
+        leaves spent data looking fresh."""
+        registry, ledger, manifests, entry, run_id = self._bound()
+        source = ledger.all_rows()[0]
+        ledger.append_row(
+            code_hash="c1", data_hash="d1", universe="hl-perps-wallets",
+            kind="gate", blocks_touched=["B-V-01"], stats_scored=["ic"],
+            registry_ref=entry["id"], outcome="fail",
+            source_eval_run_id=run_id, result_hash=source["result_hash"],
+            criteria=[{"name": "g1", "statistic": "ic",
+                       "actual": "0.038898000000000002", "passed": False}])
+
+        ok, findings = verify_all(registry=registry, ledger=ledger,
+                                  block_registry=_blocks(),
+                                  manifests_dir=manifests)
+        assert ok is False
+        assert "no consumption by that entry" in " ".join(
+            f.message for f in _errors(findings, "manifests"))
+
+    def test_a_replay_is_checked_like_the_decision_it_re_renders(self):
+        """kind='maintenance' records a verdict too. Leaving it unchecked
+        would make the replay the one place a verdict could be recorded
+        against nothing."""
+        from tests.bound_eval import tamper
+
+        registry, ledger, manifests, entry, run_id = self._bound()
+        self._gate_row(ledger, entry, run_id, manifests)
+        self._gate_row(ledger, entry, run_id, manifests, kind="maintenance")
+        tamper(manifests, run_id, value="0.9")
+
+        ok, findings = verify_all(registry=registry, ledger=ledger,
+                                  block_registry=_blocks(),
+                                  manifests_dir=manifests)
+        assert ok is False
+        flagged = {f.where for f in _errors(findings, "manifests")}
+        assert len(flagged) == 3      # the eval row and both verdict rows
+
+    def test_a_maintenance_note_is_not_treated_as_a_verdict(self):
+        """R-000001 in the live ledger is a universe-construction note. A
+        finding about every such row would be noise about rows that never
+        claimed to be verdicts."""
+        registry, ledger, manifests, entry, run_id = self._bound()
+        ledger.append_row(
+            code_hash="c9", data_hash="d9", universe="hl-perps-wallets",
+            kind="maintenance", blocks_touched=[],
+            stats_scored=["wallet_segment_labels"],
+            outcome="Universe construction. No forward returns examined.")
+
+        _, findings = verify_all(registry=registry, ledger=ledger,
+                                 block_registry=_blocks(),
+                                 manifests_dir=manifests)
+        assert [f for f in findings if f.check == "manifests"] == []

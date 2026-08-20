@@ -16,6 +16,15 @@ quietly stops holding — "just under threshold" reads as helpful and undoes
 the whole point. There is no proximity language here and no percentage-of-
 target.
 
+WHERE THE VERDICT COMES FROM
+-----------------------------
+`report` used to ignore the recorded gate row entirely and re-derive the
+verdict from whichever manifest was newest. A memo could therefore state a
+verdict that no ledger row records, and editing a manifest changed what it
+printed with every hash chain still verifying clean. `bind_verdict` reads the
+recorded row, recomputes from the bound result, and refuses on disagreement —
+see ReportRefused for why refusing beats rendering both.
+
 WHY ERRATA HAVE A PLACE IN THE OUTPUT
 --------------------------------------
 Both v11 source documents — V10_CYCLE_REPORT.md and W6_VALIDATION_RESULTS.md
@@ -32,11 +41,237 @@ reliably over-read it — and the non-claims are hardest to write and easiest
 to drop precisely when the result is good.
 """
 
-from proofhouse.core.gate_run import foreclosure_advisory
+from proofhouse.core.gate import evaluate_gate
+from proofhouse.core.gate_run import (ProvenanceRefused, foreclosure_advisory,
+                                      load_bound_result,
+                                      statistics_from_result)
+from proofhouse.core.manifest import latest_manifest_for
+
+
+class ReportRefused(Exception):
+    """The record and a fresh recomputation disagree. No memo is rendered.
+
+    D-3. Rendering both sides would make the report the place where a
+    contradiction gets presented as a matter of opinion. Refusing, and saying
+    WHICH SIDE MOVED, is the only reading that keeps the record decisive:
+    either the manifest changed under a chained digest, or the gate engine
+    now renders the same recorded numbers differently.
+
+    A deliberate gate-engine change therefore needs a stated procedure —
+    re-render and record a fresh verdict, or leave the historical one as
+    recorded and read it through its own version of the tool. Without one,
+    this refusal is the check people route around.
+    """
+
+
+def bind_verdict(entry, ledger, manifests_dir, block_registry=None,
+                 derived_inputs=None):
+    """Recover the RECORDED verdict, recompute it, and refuse on disagreement.
+
+    `report` used to ignore the gate row entirely and re-derive a verdict
+    from whichever manifest happened to be latest. Two failures fell out of
+    that: the memo could describe a verdict that was never recorded, and
+    editing a manifest changed what it printed while every hash chain still
+    verified clean.
+
+    RECOMPUTE-AND-COMPARE, NOT ONE OR THE OTHER. Reading the recorded row
+    alone would print a verdict nothing re-derives; recomputing alone is what
+    the tool already did wrong. Together they catch both a tampered manifest
+    (digest mismatch) and a gate-engine change that would silently re-render
+    an old verdict differently (criteria mismatch) — and the two failures are
+    distinguishable, which is what lets the refusal name the side that moved.
+
+    Args:
+        entry: The registered entry, composed with its fills.
+        ledger: Ledger instance.
+        manifests_dir: Where run manifests live.
+        block_registry: Optional, for the E2 anti-circularity re-check.
+        derived_inputs: Optional null-distribution values for derived
+            thresholds.
+
+    Returns:
+        (verdict, scored_results, provenance) where provenance carries
+        `status` — 'bound', 'unverifiable' (a recorded verdict predating the
+        binding) or 'unrecorded' (no gate row at all) — plus what was read.
+
+    Raises:
+        ReportRefused: The record and the recomputation disagree, or there is
+            no result to report on at all.
+    """
+    entry_id = entry.get("id")
+    row = _latest_gate_row(ledger, entry_id)
+
+    if row is not None and row.get("source_eval_run_id") and row.get("criteria"):
+        return _bound(entry, row, ledger, manifests_dir, block_registry,
+                      derived_inputs)
+
+    # LEGACY, AND SAID SO. R-000013 has no source run and no criterion
+    # outcomes; there is nothing to compare a recomputation against, so the
+    # memo falls back to the unbound lookup the tool used to use everywhere —
+    # and states that it did. Refusing here would make the tool unable to
+    # report on its own history, which is not integrity, and rendering
+    # silently would let an unverifiable memo read as a verified one.
+    manifest = latest_manifest_for(manifests_dir, entry_id)
+    if manifest is None:
+        raise ReportRefused(
+            "No manifest with a recorded result for {}. There is nothing to "
+            "report on.".format(entry_id))
+
+    from proofhouse.eval.types import ScoredResult
+    scored = ScoredResult.from_dict(manifest["result"])
+    # allow_metadata: this manifest may predate `secondary_statistics`, and
+    # its secondary gating value lives in the uncanonicalized metadata dict.
+    # Permitted ONLY here, on a path that records nothing and discloses the
+    # gap — never where a verdict is written.
+    results = statistics_from_result(entry, scored, allow_metadata=True)
+    verdict = evaluate_gate(entry, results, block_registry=block_registry,
+                            derived_inputs=derived_inputs)
+
+    if row is None:
+        status, note = "unrecorded", (
+            "No gate row for this entry. The verdict below was computed now, "
+            "from manifest {}, and is NOT a record of a decision that was "
+            "taken — nothing in the ledger says this gate was ever "
+            "rendered.".format(manifest.get("run_id")))
+    else:
+        status, note = "unverifiable", (
+            "Gate row {} predates the result binding: it records pass/fail "
+            "with no source eval run and no criterion values. The verdict "
+            "below was recomputed from manifest {}, found by the unbound "
+            "'latest manifest for this entry' lookup, so the numbers rest on "
+            "that file not having been edited rather than on a digest. "
+            "Unverifiable — neither confirmed nor contradicted.".format(
+                row.get("run_id"), manifest.get("run_id")))
+
+    return verdict, results, {
+        "status": status,
+        "gate_run_id": row.get("run_id") if row else None,
+        "source_eval_run_id": None,
+        "manifest_run_id": manifest.get("run_id"),
+        "result_hash": None,
+        "note": note,
+    }
+
+
+def _latest_gate_row(ledger, entry_id):
+    """The row whose verdict this memo is about.
+
+    DECISION-GRADE FIRST. A kind='maintenance' replay re-renders a verdict
+    that a kind='gate' row already recorded, so when both exist the decision
+    row is the one the memo is about. A replay is used only when no decision
+    row exists, which happens for a verdict recorded before this distinction
+    did.
+    """
+    if ledger is None:
+        return None
+    decisions = [r for r in ledger.all_rows()
+                 if r.get("kind") == "gate" and r.get("registry_ref") == entry_id]
+    if decisions:
+        return decisions[-1]
+    replays = [r for r in ledger.all_rows()
+               if r.get("kind") == "maintenance"
+               and r.get("registry_ref") == entry_id
+               and r.get("criteria")]
+    return replays[-1] if replays else None
+
+
+def _bound(entry, row, ledger, manifests_dir, block_registry, derived_inputs):
+    """The bound path: digests checked, verdict recomputed, sides compared."""
+    source_id = row.get("source_eval_run_id")
+    try:
+        scored, _, manifest = load_bound_result(
+            entry.get("id"), source_id, ledger, manifests_dir)
+    except ProvenanceRefused as exc:
+        # THE MANIFEST MOVED. The gate row is chained — it cannot be edited
+        # without breaking every row after it — so a disagreement between the
+        # row and the file is a disagreement the file lost.
+        raise ReportRefused(
+            "REFUSED: the recorded result no longer matches the record. Gate "
+            "row {} was rendered against eval run {}, and that result cannot "
+            "be recovered as recorded.\n\n{}\n\nTHE SIDE THAT MOVED IS THE "
+            "MANIFEST. The ledger row is hash-chained; the manifest is a file "
+            "on disk. No memo is rendered from a result that disagrees with "
+            "the record of it.".format(
+                row.get("run_id"), source_id, exc))
+
+    results = statistics_from_result(entry, scored)
+    verdict = evaluate_gate(entry, results, block_registry=block_registry,
+                            derived_inputs=derived_inputs)
+
+    differences = _compare_outcomes(row, verdict)
+    if differences:
+        # THE ENGINE MOVED. The manifest matched its digest, so the numbers
+        # are the recorded ones; re-rendering them produced a different
+        # comparison. That is a change in this tool, not in the data.
+        raise ReportRefused(
+            "REFUSED: recomputing gate row {}'s verdict from the SAME bound "
+            "result gives a different answer.\n  {}\n\nTHE SIDE THAT MOVED IS "
+            "THE GATE ENGINE. The manifest matches the digest recorded when "
+            "it ran, so the numbers are unchanged and the comparison over "
+            "them is not. A verdict is what was committed to before the data "
+            "was seen; it is not re-derived silently under a new engine. "
+            "Either record a fresh verdict deliberately, or read the "
+            "historical one through the tool that rendered it.".format(
+                row.get("run_id"), "\n  ".join(differences)))
+
+    return verdict, results, {
+        "status": "bound",
+        "gate_run_id": row.get("run_id"),
+        "source_eval_run_id": source_id,
+        "manifest_run_id": manifest.get("run_id"),
+        "result_hash": row.get("result_hash"),
+        "note": (
+            "Verdict read from gate row {}, recomputed from eval run {}'s "
+            "recorded result ({}), and the two agree criterion by "
+            "criterion.".format(row.get("run_id"), source_id,
+                                row.get("result_hash"))),
+    }
+
+
+def _compare_outcomes(row, verdict):
+    """Every way the recorded verdict and the recomputed one can disagree.
+
+    Compared as strings because both sides are canonical decimal strings by
+    construction — CriterionOutcome.to_dict writes them and the stored row
+    round-trips through JSON unchanged. Comparing floats here would
+    reintroduce exactly the ulp ambiguity that made them strings.
+    """
+    recorded = {c.get("name"): c for c in row.get("criteria") or []}
+    recomputed = {c.name: c.to_dict() for c in verdict.criteria}
+
+    differences = []
+    for name in sorted(set(recorded) | set(recomputed)):
+        if name not in recorded:
+            differences.append(
+                "criterion {}: absent from the record, present now".format(name))
+            continue
+        if name not in recomputed:
+            differences.append(
+                "criterion {}: recorded, and the engine no longer renders "
+                "it".format(name))
+            continue
+        for field in ("statistic", "comparator", "threshold", "actual",
+                      "passed", "infeasible"):
+            was = recorded[name].get(field)
+            now = recomputed[name].get(field)
+            if bool(was) != bool(now) and field in ("passed", "infeasible"):
+                differences.append("criterion {} {}: recorded {!r}, now {!r}"
+                                   .format(name, field, was, now))
+            elif field not in ("passed", "infeasible") and str(was) != str(now):
+                differences.append("criterion {} {}: recorded {!r}, now {!r}"
+                                   .format(name, field, was, now))
+
+    recorded_outcome = row.get("outcome")
+    now_outcome = "pass" if verdict.passed else "fail"
+    if recorded_outcome != now_outcome:
+        differences.append("verdict: recorded {!r}, now {!r}".format(
+            recorded_outcome, now_outcome))
+    return differences
 
 
 def build_report(entry, verdict, ledger=None, amendments=None, fills=None,
-                 errata=None, scored_results=None, ancestors=None):
+                 errata=None, scored_results=None, ancestors=None,
+                 provenance=None):
     """Assemble the report structure. No rendering, no I/O.
 
     Args:
@@ -55,6 +290,11 @@ def build_report(entry, verdict, ledger=None, amendments=None, fills=None,
             record lives on whichever ancestor was amended, not on this
             entry. Omitting it on an entry with depends_on is reported as
             UNKNOWN, never as zero.
+        provenance: The dict from bind_verdict, saying whether this verdict
+            was read from a bound record. Omitted means the caller assembled
+            the verdict itself, which is reported as UNVERIFIABLE rather
+            than left blank — a memo that does not say where its verdict
+            came from reads as though it came from the record.
 
     Returns:
         Dict with every committed content element.
@@ -77,6 +317,17 @@ def build_report(entry, verdict, ledger=None, amendments=None, fills=None,
     benchmark = _benchmark_section(gate, scored_results)
 
     return {
+        "provenance": provenance or {
+            "status": "unverifiable",
+            "gate_run_id": None,
+            "source_eval_run_id": None,
+            "manifest_run_id": None,
+            "result_hash": None,
+            "note": (
+                "No provenance was supplied, so this memo cannot say the "
+                "verdict below was the one recorded. It was rendered from "
+                "results handed to build_report."),
+        },
         "entry_id": entry.get("id"),
         "created_utc": entry.get("created_utc"),
         "mechanism_class": (entry.get("mechanism") or {}).get("class"),
@@ -161,17 +412,61 @@ def _benchmark_section(gate, scored_results):
     # disagree with the numbers beside it. A stored field would be a second
     # representation of one fact, which is #26's shape and exactly what makes
     # a stale warning possible.
-    values = [v for v in sweep.values() if isinstance(v, (int, float))]
+    #
+    # THE PRIMARY IS IN THE SPAN. It was not, and that is a check that
+    # structurally could not fire on the case it exists for: a POSITIVE
+    # primary against two NEGATIVE alternatives never spanned zero, because
+    # the only number the primary benchmark contributed was missing from the
+    # set. §2.2.1's own example is that shape — +577 bps under one benchmark
+    # against -599 under another — and one of those two numbers is always the
+    # primary's.
+    #
+    # Keyed by `gate.benchmark`, and only when the sweep actually ran: with
+    # nothing to compare against, one number cannot span zero anyway, and
+    # `sweep_missing` is the finding that catches an unrun sweep. The sweep's
+    # values are the SAME statistic recomputed under a substituted benchmark
+    # — that is what `benchmark_sensitivity` declares — so the primary's own
+    # value is comparable to them by construction. If it is not, the declared
+    # sweep is measuring something else and the span is the least of the
+    # problems.
+    span = dict(sweep)
+    primary_name = gate.get("benchmark")
+    primary_value = _primary_value(gate, scored_results)
+    if sweep and primary_name and primary_value is not None:
+        span.setdefault(primary_name, primary_value)
+
+    values = [v for v in span.values() if isinstance(v, (int, float))
+              and not isinstance(v, bool)]
     sign_flipped = bool(values) and min(values) < 0 < max(values)
 
     return {
-        "primary": gate.get("benchmark"),
+        "primary": primary_name,
         "justification": gate.get("benchmark_justification"),
         "declared_sensitivity": list(gate.get("benchmark_sensitivity") or []),
         "sweep_results": sweep,
         "sweep_missing": not sweep,
+        "sign_flip_span": span,
         "sign_flipped": sign_flipped,
     }
+
+
+def _primary_value(gate, scored_results):
+    """The primary statistic's own value, for the sign-flip span.
+
+    `gate.statistic` names it. Returned as None when the result is absent or
+    infeasible — a missing number must not be read as a zero, which would
+    make every one-sided sweep span zero and turn the flag into noise.
+    """
+    name = gate.get("statistic")
+    result = (scored_results or {}).get(name)
+    value = getattr(result, "value", None)
+    if value is None or isinstance(value, bool):
+        return None
+    if not isinstance(value, (int, float)):
+        return None
+    if value != value:       # NaN — infeasible, not a sign
+        return None
+    return value
 
 
 def _power_section(entry):
@@ -296,6 +591,17 @@ def render_text(report):
     add("mechanism  : {}".format(report["mechanism_class"]))
     add("universe   : {}".format(report["universe"]))
 
+    # FIRST, not last. Whether the verdict below is the recorded one governs
+    # how every number under it may be read, and a provenance note at the
+    # bottom of a long memo is a note nobody reaches.
+    prov = report["provenance"]
+    add("\n--- Provenance ---")
+    if prov.get("status") == "bound":
+        add("BOUND. {}".format(prov["note"]))
+    else:
+        add("{}. {}".format(prov.get("status", "unverifiable").upper(),
+                            prov.get("note")))
+
     add("\n--- Gate ---")
     add("combination: {}".format(report["combination"]))
     for c in report["criteria"]:
@@ -324,8 +630,14 @@ def render_text(report):
             "not yet a finding about the strategy.".format(
                 bench["declared_sensitivity"] or "none"))
     else:
-        for name in sorted(bench["sweep_results"]):
-            add("  {}: {}".format(name, bench["sweep_results"][name]))
+        for name in sorted(bench["sign_flip_span"]):
+            # The primary's own value is printed alongside the alternatives,
+            # marked as such. A span the reader cannot see is a span the
+            # reader cannot check, and the primary being IN it is the whole
+            # correction.
+            add("  {}{}: {}".format(
+                name, "  (primary)" if name == bench["primary"] else "",
+                bench["sign_flip_span"][name]))
         if bench["sign_flipped"]:
             add("SIGN FLIP ACROSS BENCHMARKS. The sweep spans zero, so the "
                 "direction of this result depends on which benchmark was "

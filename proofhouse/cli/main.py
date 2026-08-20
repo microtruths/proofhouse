@@ -464,42 +464,40 @@ def _last_run_id(ledger):
     return rows[-1]["run_id"] if rows else None
 
 
-def _latest_manifest_for(root, entry_id):
-    """Most recent manifest recording a result for this entry.
+def _manifests_dir(root):
+    return os.path.join(root, ".proofhouse", "manifests")
 
-    Manifests are named by run_id, which is monotonic, so the highest run_id
-    is the latest run. Only manifests carrying a `result` are eligible — one
-    without a result predates Phase 2b and cannot be gated on.
+
+def _latest_eval_run_for(ledger, entry_id):
+    """The most recent eval run this entry could be gated on.
+
+    The ledger is the index (D-1): a run with no row never happened as far as
+    the record is concerned, so resolving the source here rather than
+    scanning manifest files is what forces the row to exist. Whether that
+    run's result is actually bound is `run_gate`'s question, not this
+    function's.
     """
-    manifests_dir = os.path.join(root, ".proofhouse", "manifests")
-    if not os.path.isdir(manifests_dir):
-        return None
-    best = None
-    for fname in sorted(os.listdir(manifests_dir)):
-        if not fname.endswith(".yaml"):
-            continue
-        with open(os.path.join(manifests_dir, fname)) as fh:
-            manifest = yaml.safe_load(fh) or {}
-        if manifest.get("registry_ref") != entry_id:
-            continue
-        if not manifest.get("result"):
-            continue
-        if best is None or manifest.get("run_id", "") > best.get("run_id", ""):
-            best = manifest
-    return best
+    candidates = [r for r in ledger.all_rows()
+                  if r.get("kind") in ("eval", "subperiod")
+                  and r.get("registry_ref") == entry_id]
+    return candidates[-1]["run_id"] if candidates else None
 
 
 @cli.command()
 @click.argument("entry_id")
-def gate(entry_id):
+@click.option("--source-run", default=None,
+              help="Eval run to gate. Defaults to this entry's latest.")
+@click.option("--replay", is_flag=True,
+              help="Re-render an already-recorded verdict. Logged as "
+                   "kind=maintenance and excluded from the trial count.")
+def gate(entry_id, source_run, replay):
     """Render a pre-committed gate. Pass or fail, no interpretation."""
     from proofhouse.chain.hashing import content_hash
     from proofhouse.core.amend import RerunRefused
     from proofhouse.core.fill import compose_filled_entry
     from proofhouse.core.gate import GateError
-    from proofhouse.core.gate_run import (foreclosure_advisory, run_gate,
-                                          statistics_from_result)
-    from proofhouse.eval.types import ScoredResult
+    from proofhouse.core.gate_run import (ProvenanceRefused,
+                                          foreclosure_advisory, run_gate)
 
     root = _get_root()
     try:
@@ -507,18 +505,17 @@ def gate(entry_id):
     except KeyError:
         raise click.ClickException("No such entry: {}".format(entry_id))
 
-    manifest = _latest_manifest_for(root, entry_id)
-    if manifest is None:
+    ledger = _ledger(root)
+    source_run = source_run or _latest_eval_run_for(ledger, entry_id)
+    if source_run is None:
         # Not a failing gate. There is no result to compare, so there is
         # nothing to render a verdict about (§2.5).
         raise click.ClickException(
-            "No manifest with a recorded result for {}. Run the eval first — "
-            "a missing result is a pipeline state, not a gate outcome, so no "
-            "verdict is rendered.".format(entry_id)
+            "No eval run recorded for {}. Run the eval first — a missing "
+            "result is a pipeline state, not a gate outcome, so no verdict is "
+            "rendered.".format(entry_id)
         )
 
-    scored = ScoredResult.from_dict(manifest["result"])
-    ledger = _ledger(root)
     fills = _fill_log(root).for_entry(entry_id)
 
     # The gate runs against the registered entry composed with its fills, and
@@ -529,19 +526,29 @@ def gate(entry_id):
         {k: v for k, v in effective.items() if k != "hash"})
 
     try:
+        # The result is NOT passed in. run_gate recovers it from the eval
+        # row's manifest and re-checks the digests written when it ran, so
+        # this command cannot hand the gate a number.
         verdict, run_id = run_gate(
             effective,
-            statistics_from_result(effective, scored),
+            source_run,
             ledger,
-            code_hash=manifest.get("code_hash"),
-            data_hash=manifest.get("data_hash"),
+            _manifests_dir(root),
             amendments=_amendment_log(root).for_entry(entry_id),
             block_registry=_get_block_registry(root),
+            kind="maintenance" if replay else "gate",
         )
     except RerunRefused as exc:
         raise click.ClickException(str(exc))
+    except ProvenanceRefused as exc:
+        raise click.ClickException(str(exc))
     except GateError as exc:
         raise click.ClickException(str(exc))
+    except KeyError as exc:
+        # statistics_from_result naming a statistic the recorded result does
+        # not carry. A legible refusal, so it should read as one rather than
+        # as a traceback.
+        raise click.ClickException(str(exc.args[0] if exc.args else exc))
 
     click.echo("{}  gate: {}".format(entry_id, verdict.combination))
     for c in verdict.criteria:
@@ -574,7 +581,10 @@ def gate(entry_id):
             "own.".format("PASS" if forced else "FAIL",
                           ", ".join(non_decisive)))
 
-    click.echo("\nrecorded as {}".format(run_id))
+    click.echo("\nrecorded as {} (source eval run {}{})".format(
+        run_id, source_run,
+        ", kind=maintenance — a replay, excluded from the trial count"
+        if replay else ""))
     if not verdict.passed:
         sys.exit(1)
 
@@ -637,10 +647,10 @@ def report(entry_id):
     """Render the findings memo for an entry's most recent gate."""
     from proofhouse.chain.hashing import content_hash
     from proofhouse.core.fill import compose_filled_entry
-    from proofhouse.core.gate import GateError, evaluate_gate
-    from proofhouse.core.gate_run import statistics_from_result
-    from proofhouse.core.report import build_report, render_text
-    from proofhouse.eval.types import ScoredResult
+    from proofhouse.core.gate import GateError
+    from proofhouse.core.gate_run import ProvenanceRefused
+    from proofhouse.core.report import (ReportRefused, bind_verdict,
+                                        build_report, render_text)
 
     root = _get_root()
     registry = _registry(root)
@@ -649,24 +659,26 @@ def report(entry_id):
     except KeyError:
         raise click.ClickException("No such entry: {}".format(entry_id))
 
-    manifest = _latest_manifest_for(root, entry_id)
-    if manifest is None:
-        raise click.ClickException(
-            "No manifest with a recorded result for {}. There is nothing to "
-            "report on.".format(entry_id))
-
     fills = _fill_log(root).for_entry(entry_id)
     effective = compose_filled_entry(entry, fills)
     effective["hash"] = content_hash(effective)
 
-    scored = ScoredResult.from_dict(manifest["result"])
     try:
-        results = statistics_from_result(effective, scored)
-        verdict = evaluate_gate(
-            effective, results,
-            block_registry=_get_block_registry(root))
+        # The verdict is READ from the recorded gate row and recomputed from
+        # the result that row is bound to. A disagreement refuses rather than
+        # rendering, and says which side moved.
+        verdict, results, provenance = bind_verdict(
+            effective,
+            _ledger(root),
+            _manifests_dir(root),
+            block_registry=_get_block_registry(root),
+        )
+    except (ReportRefused, ProvenanceRefused) as exc:
+        raise click.ClickException(str(exc))
     except GateError as exc:
         raise click.ClickException(str(exc))
+    except KeyError as exc:
+        raise click.ClickException(str(exc.args[0] if exc.args else exc))
 
     # The lineage, not just this entry. An entry whose own amendment was
     # ordinary carries an empty `amendments` list while its ancestors carry
@@ -682,6 +694,7 @@ def report(entry_id):
         fills=fills,
         scored_results=results,
         ancestors=ancestors,
+        provenance=provenance,
     )))
 
 
@@ -690,7 +703,8 @@ def report(entry_id):
               help="Path to failure-catalog.md, for resolving #N citations.")
 def verify(catalog):
     """Full integrity check across every log, not just the chains."""
-    from proofhouse.core.verify import catalog_citation_resolver, verify_all
+    from proofhouse.core.verify import (UNVERIFIABLE,
+                                        catalog_citation_resolver, verify_all)
 
     root = _get_root()
     resolver = None
@@ -706,6 +720,7 @@ def verify(catalog):
         rejected_log=_rejected_log(root),
         block_registry=_get_block_registry(root),
         citation_resolver=resolver,
+        manifests_dir=_manifests_dir(root),
     )
 
     if resolver is None:
@@ -715,12 +730,17 @@ def verify(catalog):
 
     errors = [f for f in findings if f.severity == "error"]
     warnings = [f for f in findings if f.severity == "warning"]
+    # Counted on its own line, not folded into the warnings. "We could not
+    # check this" and "we checked, and the evidence is weaker than it looks"
+    # are different states, and the second reads as reassurance the first has
+    # not earned. See core.verify.UNVERIFIABLE.
+    unverifiable = [f for f in findings if f.severity == UNVERIFIABLE]
 
-    for finding in errors + warnings:
+    for finding in errors + warnings + unverifiable:
         click.echo("  {}".format(finding))
 
-    click.echo("\n{} error(s), {} warning(s)".format(
-        len(errors), len(warnings)))
+    click.echo("\n{} error(s), {} warning(s), {} unverifiable".format(
+        len(errors), len(warnings), len(unverifiable)))
     if ok:
         click.echo("verify: OK")
     else:

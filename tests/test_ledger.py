@@ -332,3 +332,95 @@ class TestLedger:
         assert len(run_ids) == len(set(run_ids)), (
             "run_ids must be unique, got: {}".format(run_ids)
         )
+
+
+class TestTheResultBindingFields:
+    """Phase 2d. The row is where "which numbers" stops being prose.
+
+    Every field is omitted when None so that every pre-existing row keeps
+    its hash — the same rule stage, segment, p_value and entry_hash were
+    added under. A field added to a row after hashing would leave the stored
+    hash disagreeing with the row's contents and break the chain.
+    """
+
+    def _ledger(self):
+        return Ledger(os.path.join(tempfile.mkdtemp(), "ledger.jsonl"))
+
+    def test_a_row_that_does_not_use_them_carries_no_new_field(self):
+        """The regression that matters. Canonical rule 5 makes absent and
+        null the same thing, so a field written as None would change nothing
+        — but a field written as a default (0, "", {}) would silently rewrite
+        the hash of every row that does not use it, and the live ledger's
+        eleven rows predate all four of these.
+
+        Asserted as an exact key set rather than as a pinned hash: the row
+        carries a wall-clock ts_utc, so its hash is not reproducible across
+        runs. The key set is the property that actually matters."""
+        ledger = self._ledger()
+        ledger.append_row(code_hash="c1", data_hash="d1", universe="u1",
+                          kind="eval", blocks_touched=[], stats_scored=["ic"])
+        row = ledger.all_rows()[0]
+
+        assert set(row) == {
+            "run_id", "ts_utc", "kind", "registry_ref", "universe",
+            "blocks_touched", "code_hash", "data_hash", "stats_scored",
+            "outcome", "hash",
+        }
+
+    def test_the_digests_are_inside_the_hashed_payload(self):
+        ledger = self._ledger()
+        ledger.append_row(code_hash="c1", data_hash="d1", universe="u1",
+                          kind="eval", blocks_touched=[], stats_scored=["ic"],
+                          result_hash="sha256:aaa", manifest_hash="sha256:bbb")
+        row = ledger.all_rows()[0]
+        assert row["result_hash"] == "sha256:aaa"
+        assert row["manifest_hash"] == "sha256:bbb"
+
+        from proofhouse.chain.hashing import content_hash
+        assert content_hash(row) == row["hash"]
+
+    def test_a_gate_row_carries_its_criterion_outcomes(self):
+        ledger = self._ledger()
+        criteria = [{"name": "g1", "statistic": "ic", "comparator": ">=",
+                     "threshold": "0.05", "threshold_source": "literal",
+                     "actual": "0.038898000000000002", "passed": False}]
+        ledger.append_row(code_hash="c1", data_hash="d1", universe="u1",
+                          kind="gate", blocks_touched=[], stats_scored=["ic"],
+                          registry_ref="H-1", outcome="fail",
+                          source_eval_run_id="R-000001",
+                          result_hash="sha256:aaa", criteria=criteria)
+        row = ledger.all_rows()[0]
+
+        assert row["source_eval_run_id"] == "R-000001"
+        assert row["criteria"] == criteria
+        ok, errors = ledger.verify()
+        assert ok, errors
+
+    def test_a_replay_may_carry_them_too(self):
+        """kind='maintenance' is an explicit re-render of a recorded verdict.
+        It is the same claim about the same numbers, so it carries the same
+        fields — and _EXCLUDED_KINDS keeps it out of the trial count."""
+        ledger = self._ledger()
+        ledger.append_row(code_hash="c1", data_hash="d1", universe="u1",
+                          kind="maintenance", blocks_touched=[],
+                          stats_scored=["ic"], registry_ref="H-1",
+                          outcome="fail", source_eval_run_id="R-000001",
+                          criteria=[{"name": "g1"}])
+        assert ledger.count_trials("u1") == 0
+
+    def test_another_kind_may_not_claim_a_verdict(self):
+        """A row claiming criterion outcomes is claiming a verdict was
+        rendered, and only the gate path renders one. An explore row
+        asserting them would be a verdict recorded outside the gate path,
+        which is what the binding exists to make impossible."""
+        ledger = self._ledger()
+        with pytest.raises(ValueError) as exc:
+            ledger.append_row(code_hash="c1", data_hash="d1", universe="u1",
+                              kind="explore", blocks_touched=[],
+                              stats_scored=[], criteria=[{"name": "g1"}])
+        assert "kind='gate'" in str(exc.value)
+
+        with pytest.raises(ValueError):
+            ledger.append_row(code_hash="c1", data_hash="d1", universe="u1",
+                              kind="eval", blocks_touched=[], stats_scored=[],
+                              source_eval_run_id="R-000001")

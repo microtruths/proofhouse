@@ -13,9 +13,10 @@ executing an evaluation. It performs every safety check in fixed order:
     6. Load data via adapter
     7. Run artifact with parameters from the entry  (not embedded constants)
     8. Score result  (trial count FROM the ledger, never a parameter — §4)
-    9. Build manifest with full provenance  (§5.3)
+    9. Build manifest with full provenance  (§5.3), including the result
+   9a. Digest the manifest, so the RESULT enters the hash chain
    10. Persist manifest to disk  (§5.3: "a result without a manifest...")
-   11. Append ledger row with stage and segment
+   11. Append ledger row with stage, segment, and both digests
    12. Return (ScoredResult, Diagnostics, manifest)
 
 Every refusal (3 and 4) precedes consumption (5) so that a rejected run
@@ -37,6 +38,7 @@ import platform
 import time
 from datetime import datetime, timezone
 
+from proofhouse.chain.canonical import decimal_str
 from proofhouse.core.artifact_pin import verify_pin
 from proofhouse.eval.types import ScoredResult, Diagnostics
 
@@ -258,6 +260,22 @@ def run_eval(entry, adapter, block_registry, ledger,
     # gate reads would reopen that boundary through the back door.
     manifest["result"] = scored.to_dict()
 
+    # ---- Step 9a: Digest the manifest, so the RESULT enters the chain ----
+    #
+    # The manifest was plain YAML: unhashed, unchained, and referenced by
+    # nothing. Editing R-000012.yaml changed what `proofhouse report`
+    # printed and every hash chain still verified clean, which is the exact
+    # hole this closes. The digests go on the ledger row, which IS hashed and
+    # chained, so a later edit to the file contradicts an append-only record.
+    #
+    # Computed BEFORE the append because the row carries them, and the row's
+    # own hash must cover them (the entry_hash comment below is the same
+    # rule). run_id is excluded from manifest_hash precisely because it is
+    # assigned by that append — see _DIGEST_EXCLUDED.
+    from proofhouse.core.manifest import manifest_digest, result_digest
+    result_hash = result_digest(manifest["result"])
+    manifest_hash = manifest_digest(manifest)
+
     # ---- Step 10: Persist manifest to disk ----
     # §5.3: "a result without a manifest is not a result."
     # The manifest lives on disk, not just in memory. Without this,
@@ -269,8 +287,20 @@ def run_eval(entry, adapter, block_registry, ledger,
     # (Initial save uses a temp run_id; final save overwrites.)
 
     # ---- Step 11: Append ledger row ----
-    stats_scored = [scored.statistic]
-    outcome_str = "{}={:.6f}".format(scored.statistic, scored.value)
+    #
+    # stats_scored names every gate-evaluable statistic this run produced,
+    # not only the headline one. A gate criterion may compare a secondary
+    # statistic against a registered threshold, so a row listing only the
+    # primary understates what was measured — and `verify` cross-checks the
+    # gate row's criteria against this list.
+    stats_scored = sorted({scored.statistic} | set(scored.secondary_statistics))
+    # EXACT, not rounded. This read `{:.6f}`, so the row said
+    # clustered_t_stat=1.861711 for a value of 1.8617105276654804 — six
+    # digits of a number whose comparison against 2.923 was the verdict. A
+    # rounded restatement of a hashed number is a second representation that
+    # can only ever disagree with the first; decimal_str is the same rule the
+    # manifest and the criterion outcomes use.
+    outcome_str = "{}={}".format(scored.statistic, decimal_str(scored.value))
     ledger.append_row(
         code_hash=expected_hash,
         data_hash=adapter.data_hash,
@@ -292,6 +322,11 @@ def run_eval(entry, adapter, block_registry, ledger,
         # not k*s. The parent link is what stops the kind being a
         # laundering hole — the ledger refuses a subperiod row without it.
         parent_run_id=parent_run_id,
+        # The result, inside the hash chain. A gate row later cites
+        # result_hash to say which numbers its verdict was rendered against,
+        # and `verify` recomputes both digests from the file on disk.
+        result_hash=result_hash,
+        manifest_hash=manifest_hash,
     )
 
     # Get the run_id that was just assigned

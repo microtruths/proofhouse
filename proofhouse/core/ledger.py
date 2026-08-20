@@ -150,7 +150,9 @@ class Ledger:
                    registry_ref=None, outcome=None,
                    stage=None, segment=None,
                    p_value=None, n_effective=None,
-                   parent_run_id=None, entry_hash=None):
+                   parent_run_id=None, entry_hash=None,
+                   result_hash=None, manifest_hash=None,
+                   source_eval_run_id=None, criteria=None):
         """Append a row to the ledger. Written to disk immediately (7f).
 
         Each row is content-hashed and chained via prev pointers.
@@ -170,9 +172,21 @@ class Ledger:
             stage: Optional stage label (1 or 2). Legacy rows without
                    this field are handled explicitly in count methods.
             segment: Optional segment label ('E', 'S1', 'S2', 'V', etc.).
+            result_hash: Digest of the manifest's `result` block. On an eval
+                   row it is the result this run produced; on a gate row it
+                   is the result the verdict was rendered against, and the
+                   two must agree.
+            manifest_hash: Digest of the whole manifest (run_id excluded).
+            source_eval_run_id: Gate rows only — the eval run whose recorded
+                   result this verdict was computed from.
+            criteria: Gate rows only — the exact CriterionOutcome dicts.
+                   Numeric fields are already canonical decimal strings
+                   there, so canonical rule 3 is satisfied without
+                   conversion.
 
         Raises:
-            ValueError: If kind is invalid.
+            ValueError: If kind is invalid, or if a gate-only field is set on
+                a row of another kind.
         """
         if kind not in _VALID_KINDS:
             raise ValueError(
@@ -195,6 +209,22 @@ class Ledger:
                 "parent_run_id is only meaningful for kind='subperiod'; "
                 "got kind={!r}".format(kind)
             )
+
+        # A row claiming criterion outcomes is claiming a verdict was
+        # rendered. Only the gate path renders one — an explicit replay is
+        # kind='maintenance', which is logged and excluded from the
+        # multiplicity count, so it is the same claim about the same numbers
+        # and carries the same fields. Any other kind asserting them would be
+        # a verdict recorded outside the gate path, which is the whole thing
+        # this binding exists to make impossible.
+        if kind not in ("gate", "maintenance"):
+            if source_eval_run_id is not None or criteria is not None:
+                raise ValueError(
+                    "source_eval_run_id and criteria record a rendered "
+                    "verdict and are only meaningful for kind='gate' (or an "
+                    "explicit kind='maintenance' replay); got "
+                    "kind={!r}".format(kind)
+                )
 
         run_id = "R-{:06d}".format(self._next_run)
         self._next_run += 1
@@ -259,6 +289,27 @@ class Ledger:
         # Omitted when None, so every pre-existing row keeps its hash.
         if entry_hash is not None:
             row["entry_hash"] = entry_hash
+
+        # Phase 2d. WHICH RESULT this row is about.
+        #
+        # Every one of these is omitted when None, so every pre-existing row
+        # keeps its hash — the same rule stage/segment/p_value/entry_hash
+        # were added under. They are set BEFORE hashing for the same reason:
+        # a field added to the row afterwards would leave the stored hash
+        # disagreeing with the row's contents.
+        #
+        # These four are what turn "this exact run produced these exact
+        # numbers, which produced this exact verdict" from prose into a
+        # checkable claim. Before them, the chain proved nobody edited a ROW,
+        # and the manifest holding the numbers sat outside it entirely.
+        if result_hash is not None:
+            row["result_hash"] = result_hash
+        if manifest_hash is not None:
+            row["manifest_hash"] = manifest_hash
+        if source_eval_run_id is not None:
+            row["source_eval_run_id"] = source_eval_run_id
+        if criteria is not None:
+            row["criteria"] = [dict(c) for c in criteria]
 
         self._write_and_chain(row)
 
