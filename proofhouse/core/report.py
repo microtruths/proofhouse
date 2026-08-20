@@ -71,6 +71,11 @@ def build_report(entry, verdict, ledger=None, amendments=None, fills=None,
     advisory = foreclosure_advisory(
         entry, [(c.name, c.passed) for c in verdict.criteria])
 
+    # Computed before the return so the non-claims can read the same
+    # structure the reader sees, rather than re-deriving it from the raw
+    # results and risking the two disagreeing.
+    benchmark = _benchmark_section(gate, scored_results)
+
     return {
         "entry_id": entry.get("id"),
         "created_utc": entry.get("created_utc"),
@@ -81,7 +86,7 @@ def build_report(entry, verdict, ledger=None, amendments=None, fills=None,
         "verdict": "PASS" if verdict.passed else "FAIL",
         "combination": verdict.combination,
         "criteria": [c.to_dict() for c in verdict.criteria],
-        "benchmark": _benchmark_section(gate, scored_results),
+        "benchmark": benchmark,
         "multiplicity": {
             "universe": universe,
             "trials": trials,
@@ -122,7 +127,8 @@ def build_report(entry, verdict, ledger=None, amendments=None, fills=None,
             "licenses_apply": verdict.passed,
         },
         "errata": list(errata or []),
-        "non_claims": _non_claims(entry, verdict, ancestors),
+        "non_claims": _non_claims(entry, verdict, ancestors,
+                                  benchmark),
     }
 
 
@@ -147,12 +153,24 @@ def _benchmark_section(gate, scored_results):
     for result in (scored_results or {}).values():
         sweep.update(getattr(result, "benchmark_results", None) or {})
 
+    # DERIVED, NOT PLUMBED. stats.benchmark_sensitivity computes
+    # `sign_flip_detected` and nothing ever read it — it does not even reach
+    # ScoredResult, which stores only {benchmark: alpha}.
+    #
+    # Deriving it from the alphas already being printed means the flag cannot
+    # disagree with the numbers beside it. A stored field would be a second
+    # representation of one fact, which is #26's shape and exactly what makes
+    # a stale warning possible.
+    values = [v for v in sweep.values() if isinstance(v, (int, float))]
+    sign_flipped = bool(values) and min(values) < 0 < max(values)
+
     return {
         "primary": gate.get("benchmark"),
         "justification": gate.get("benchmark_justification"),
         "declared_sensitivity": list(gate.get("benchmark_sensitivity") or []),
         "sweep_results": sweep,
         "sweep_missing": not sweep,
+        "sign_flipped": sign_flipped,
     }
 
 
@@ -168,7 +186,7 @@ def _power_section(entry):
     }
 
 
-def _non_claims(entry, verdict, ancestors=None):
+def _non_claims(entry, verdict, ancestors=None, benchmark=None):
     """What this result does not show, stated whether or not it passed."""
     claims = []
     if not verdict.passed:
@@ -253,6 +271,12 @@ def _non_claims(entry, verdict, ancestors=None):
             "The power check was never filled, so this design's ability to "
             "detect its own hypothesized effect is unknown. A failure cannot "
             "be weighed as evidence of absence until it is.")
+    if (benchmark or {}).get("sign_flipped"):
+        claims.append(
+            "The benchmark sweep spans zero, so the SIGN of this result "
+            "depends on the benchmark chosen. Until that is resolved it is a "
+            "finding about the benchmark rather than about the strategy, and "
+            "the primary benchmark's number should not be read on its own.")
     if not (entry.get("gate") or {}).get("benchmark_sensitivity"):
         claims.append(
             "No benchmark sensitivity was declared, so the result cannot be "
@@ -302,6 +326,12 @@ def render_text(report):
     else:
         for name in sorted(bench["sweep_results"]):
             add("  {}: {}".format(name, bench["sweep_results"][name]))
+        if bench["sign_flipped"]:
+            add("SIGN FLIP ACROSS BENCHMARKS. The sweep spans zero, so the "
+                "direction of this result depends on which benchmark was "
+                "chosen. §2.2.1 measured exactly this: +577 bps under BTC "
+                "subtraction against -599 under an OI-weighted index, on the "
+                "same data.")
 
     mult = report["multiplicity"]
     add("\n--- Multiplicity ---")

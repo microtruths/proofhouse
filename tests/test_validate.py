@@ -514,3 +514,64 @@ class TestV16ClusteringUnitDeclared:
                       "fill_rule": "power(effect_size, blocks, prior_trials)"},
         }
         validate_entry(entry, block_registry=_make_block_registry())
+
+
+class TestV17FeasibilityIsExecutable:
+    """The schema collected every input eval/costs needs and ran none of them.
+
+    An entry could register declaring a 1% rebalance band while its smallest
+    possible trade was 12.5% of a position. Parent plan §2 named this failure
+    directly: "a strategy whose edge is real but smaller than the
+    quantization drag at the intended sleeve size — feasibility, not
+    statistics."
+    """
+
+    def _entry(self, sleeve, held, min_order, band):
+        entry = _make_valid_entry()
+        entry["feasibility"] = {
+            "min_order_notional_usd": min_order,
+            "sleeve_range": sleeve,
+            "instruments_held": held,
+            "rebalance_band": band,
+        }
+        return entry
+
+    def test_infeasible_at_every_declared_size_is_refused(self):
+        """$2,000 over 25 instruments is $80 a position, so a $10 order is
+        12.5% of one. A 1% band cannot be honoured at any size in range."""
+        with pytest.raises(ValidationError) as exc:
+            validate_entry(self._entry(["2000", "2000"], 25, "10", "0.01"),
+                           block_registry=_make_block_registry())
+
+        message = str(exc.value)
+        assert "V-17" in message
+        assert "12.5%" in message
+
+    def test_feasible_only_at_the_top_of_the_range_is_allowed(self):
+        """sleeve_range is a RANGE. A design infeasible at $2,000 and fine at
+        $200,000 is not broken — it has a minimum size, and refusing it would
+        reject legitimate work."""
+        validate_entry(self._entry(["2000", "200000"], 25, "10", "0.01"),
+                       block_registry=_make_block_registry())
+
+    def test_a_comfortably_feasible_entry_passes(self):
+        validate_entry(self._entry(["100000", "200000"], 8, "10", "0.15"),
+                       block_registry=_make_block_registry())
+
+    def test_a_band_exactly_equal_to_one_increment_passes(self):
+        """$20,000 over 25 instruments is $800; a $10 order is 1.25% of a
+        position. A band of exactly 1.25% is one whole increment, which is
+        the boundary and is executable."""
+        validate_entry(self._entry(["20000", "20000"], 25, "10", "0.0125"),
+                       block_registry=_make_block_registry())
+
+    def test_a_malformed_feasibility_block_is_not_this_validators_error(self):
+        """Shape problems belong to V-12 and the required-field checks. This
+        validator only speaks to coherence between well-formed numbers, and
+        must not turn a missing field into a confusing feasibility message."""
+        entry = _make_valid_entry()
+        entry["feasibility"] = {"sleeve_range": ["100", "20000"]}
+        try:
+            validate_entry(entry, block_registry=_make_block_registry())
+        except ValidationError as exc:
+            assert "V-17" not in str(exc.value)

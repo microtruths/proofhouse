@@ -104,6 +104,14 @@ Errors were made by every participant: the human's plan drafts, the primary revi
 > "walk the lineage" has been applied to the stamper and not to the reader. **Grep for every
 > caller of the fact, not every caller of the function.**
 
+| **32** | **Two computed facts with no reader, in the modules S-2 is exempt from — because S-2 guards FUNCTIONS, not FACTS.** (a) `stats.benchmark_sensitivity` computes `sign_flip_detected` and nothing in `core/` reads it; it does not even reach `ScoredResult`, which stores only `{benchmark: alpha}`. A findings memo could print a sweep in which the benchmark **reversed the sign of the result** and say nothing — §2.2.1 measured exactly that, +577 bps under BTC subtraction against −599 under an OI-weighted index on the same data. (b) `costs.check_feasibility` has no caller: an entry registered declaring a 1% rebalance band while its smallest possible trade was 12.5% of a position, with the schema collecting every input the check needed. | Phase 1 `eval/` toolkit modules, carried through Phase 2 | A defect-family sweep after five instances in one day, asking which modules S-2 could not see | **An exemption scoped to functions does not cover the facts they produce.** `costs.py` and `stats.py` are exempt from S-2 as researcher-facing toolkits, and that is correct for `panel_ic` or `deflated_sharpe` — the researcher's `score_fn` calls those. But a *warning* a toolkit produces is not a toolkit function; it is an output that needs a reader regardless of who calls the producer. Fix: derive the sign flip in `report.py` from the alphas already printed rather than plumbing a field — one representation, so the flag cannot disagree with the numbers beside it — and wire feasibility as V-17, refusing only designs infeasible at every declared sleeve size. |
+
+> **Entry #32 provenance.** Found 2026-08-19 by sweeping for more instances of the day's
+> recurring families rather than waiting for the next one to surface. Both had been present
+> since Phase 1. Note the near-miss in the sweep itself: the first pass chased a function
+> called `check_executable`, inferred from a docstring; the function is `check_feasibility`.
+> **A name read out of prose is a guess.**
+
 ## Process lessons (meta)
 
 - **Review the diff AND the whole.** Several errors (#17, stale "200 draws" counts, a rejected-suggestion entry contradicting an adopted rule) were merge debris invisible to diff-only review.

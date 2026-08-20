@@ -108,7 +108,7 @@ result having to be read out of prose.
 proofhouse/
   schema/          # Record types, validation, schema versioning
     models.py      # Entry schema with full field set
-    validate.py    # 6 enforced checks (E1–E6) + 16 validators (V1–V16)
+    validate.py    # 6 enforced checks (E1–E6) + 17 validators (V1–V17)
     versions.py    # SCHEMA_VERSION = 1
   chain/           # Hash chain (no imports from core/)
     canonical.py   # Deterministic JSON serialization
@@ -141,6 +141,13 @@ proofhouse/
 | E4 | Block consumption | V-blocks single-use per hypothesis |
 | E5 | Pass licensing | pass_licenses + pass_does_not_establish required, ≤200 chars |
 | E6 | Block availability | data_complete required; seams + V requires acknowledgment |
+
+**V-17** is worth naming beside these: the feasibility block must describe
+something executable. A rebalance band smaller than one tradeable increment is
+not a design, and the schema was collecting every input needed to notice while
+running none of them. Refused only when no size in `sleeve_range` works — a
+design infeasible at $2,000 and fine at $200,000 has a minimum size, not a
+defect.
 
 ## The gate
 
@@ -359,13 +366,13 @@ that is where the original one lived.
 # Run all tests
 python -m pytest tests/ -v
 
-# 648 tests. The Phase 0 core:
+# 658 tests. The Phase 0 core:
 #   C-1…C-5:  Canonical serialization (byte-stability)
 #   H-1…H-4:  Hash chain (construction + tamper detection)
 #   B-1…B-9:  Block registry (consumption, seams, promotion, and the
 #             segment/consumption agreement checks)
 #   L-1…L-5:  Ledger (dedup, maintenance, per-universe, overlap, write timing)
-#   V-1…V-16: Validation (all schema checks)
+#   V-1…V-17: Validation (all schema checks)
 #   S-1:      Structure (import direction enforcement)
 #   S-2:      No unwired public functions — the recurring defect is never a
 #             wrong component, it is an unconnected one

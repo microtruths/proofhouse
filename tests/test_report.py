@@ -452,3 +452,66 @@ class TestTheLineageRevisionCount:
         report = build_report(entry, verdict, ancestors=[parent])
 
         assert "revision 1" in " ".join(report["non_claims"])
+
+
+class TestASignFlipAcrossBenchmarksIsReported:
+    """§2.2.1 measured the benchmark choice reversing a result's sign:
+    +577 bps under BTC subtraction against -599 under an OI-weighted index,
+    on the same data. That is why the sweep is mandatory.
+
+    stats.benchmark_sensitivity computed `sign_flip_detected` and nothing
+    read it — it does not even reach ScoredResult, which stores only
+    {benchmark: alpha}. So a memo could print a sweep that spanned zero and
+    say nothing. Derived here from the alphas already being printed, so the
+    flag cannot disagree with the numbers beside it.
+    """
+
+    def _with_sweep(self, sweep):
+        return {"s2_median_gross_bps": ScoredResult(
+            "s2_median_gross_bps", -10729.0, 4, benchmark_results=sweep)}
+
+    def test_a_sweep_spanning_zero_is_flagged_and_rendered(self, w6):
+        entry, verdict = w6
+        report = build_report(entry, verdict, scored_results=self._with_sweep(
+            {"btc-subtraction": 577.0, "oi-weighted-index": -599.0}))
+
+        assert report["benchmark"]["sign_flipped"] is True
+        assert "SIGN FLIP ACROSS BENCHMARKS" in render_text(report)
+        assert any("depends on the benchmark chosen" in c
+                   for c in report["non_claims"])
+
+    def test_same_signed_alphas_do_not_flag(self, w6):
+        """THE CRY-WOLF DIRECTION. A mandatory warning that always fires is
+        a warning nobody reads — how the first cut of the block check and
+        the citation resolver both failed."""
+        entry, verdict = w6
+        report = build_report(entry, verdict, scored_results=self._with_sweep(
+            {"btc-subtraction": 577.0, "oi-weighted-index": 412.0}))
+
+        assert report["benchmark"]["sign_flipped"] is False
+        assert "SIGN FLIP" not in render_text(report)
+        assert not any("depends on the benchmark chosen" in c
+                       for c in report["non_claims"])
+
+    def test_both_negative_does_not_flag(self, w6):
+        """Consistently negative is a consistent answer, not a flip."""
+        entry, verdict = w6
+        report = build_report(entry, verdict, scored_results=self._with_sweep(
+            {"a": -577.0, "b": -599.0}))
+        assert report["benchmark"]["sign_flipped"] is False
+
+    def test_a_single_benchmark_cannot_flip(self, w6):
+        entry, verdict = w6
+        report = build_report(entry, verdict,
+                              scored_results=self._with_sweep({"a": 577.0}))
+        assert report["benchmark"]["sign_flipped"] is False
+
+    def test_an_unrun_sweep_is_not_a_clean_sweep(self, w6):
+        """No flip detected is not the same as no flip possible. The
+        MISSING line must still be what catches an unrun sweep."""
+        entry, verdict = w6
+        report = build_report(entry, verdict)
+
+        assert report["benchmark"]["sign_flipped"] is False
+        assert report["benchmark"]["sweep_missing"] is True
+        assert "SENSITIVITY SWEEP MISSING" in render_text(report)

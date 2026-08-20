@@ -31,6 +31,8 @@ V-15: literal gate thresholds must be finite (-inf passes unconditionally,
       inf/nan fail unconditionally, 1e400 overflows silently)
 V-16: power_events requires a declared clustering unit — the icc is
       meaningless without knowing what it correlates within
+V-17: the feasibility block must be internally executable — a rebalance
+      band smaller than the smallest possible trade is not a design
 """
 
 import math
@@ -392,6 +394,47 @@ def validate_entry(entry, block_registry=None, existing_entries=None):
                 "within a day and 0.067 within an instrument are different "
                 "claims. State the unit (e.g. 'trading date')."
             )
+
+    # V-17: the feasibility block must describe something executable.
+    #
+    # The schema collected min_order_notional_usd, sleeve_range,
+    # instruments_held and rebalance_band — every input eval/costs needs —
+    # and nothing ran the check. An entry could register declaring a 1%
+    # rebalance band while its smallest possible trade was 12.5% of a
+    # position. Parent plan §2: "a strategy whose edge is real but smaller
+    # than the quantization drag at the intended sleeve size — feasibility,
+    # not statistics."
+    #
+    # REFUSED ONLY WHEN NO DECLARED SIZE WORKS. sleeve_range is a range, and
+    # a design that is infeasible at $2,000 and fine at $20,000 is not
+    # broken — it has a minimum size. Refusing the whole range would reject
+    # legitimate designs, and a check that refuses legitimate work gets
+    # routed around.
+    feasibility = entry.get("feasibility") or {}
+    sleeve = feasibility.get("sleeve_range")
+    try:
+        top_sleeve = float(sleeve[1])
+        held = int(feasibility["instruments_held"])
+        min_order = float(feasibility["min_order_notional_usd"])
+        band = float(feasibility["rebalance_band"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        # Shape problems are V-12's and the required-field checks'; this
+        # validator only speaks to coherence between well-formed numbers.
+        pass
+    else:
+        if held > 0 and top_sleeve > 0:
+            position = top_sleeve / held
+            implied = min_order / position if position else float("inf")
+            if band < implied:
+                errors.append(
+                    "V-17: feasibility is not executable at ANY declared "
+                    "sleeve size. At the top of sleeve_range ({:g}) across {} "
+                    "instruments, each position is {:g} USD, so the smallest "
+                    "possible order ({:g} USD) is {:.1%} of a position — but "
+                    "rebalance_band is {:.1%}. The band cannot be smaller "
+                    "than one tradeable increment.".format(
+                        top_sleeve, held, position, min_order, implied, band)
+                )
 
     # --- E3: Diagnostics isolation (structural) ---
     # A4 requires that the verdict function structurally cannot read diagnostics.
