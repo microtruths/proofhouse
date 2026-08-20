@@ -119,6 +119,18 @@ Errors were made by every participant: the human's plan drafts, the primary revi
 > safety property; only the convenience wrapper was bypassed. Worth noting the workaround was
 > correct — the defect was in the shortcut, not the machinery.
 
+| **34** | **A stability requirement written as a raw event rate on a growing universe measured the venue's growth curve, not the signal.** The crowding/reversal exploration protocol (§4.4, commit `da41cd6`) required max/min monthly event-rate ratio ≤ 2.0 across six exploration blocks. The qualifying universe grew **4.84×** across that span (≈20 → ≈96 coins/day), and all 21 constructs "failed" with ratios 4.66–5.84 tracking the growth **in lockstep** across three normalizations, two cutoffs, and three horizons. Normalized per mean universe size, all 21 pass (1.04–1.27). The branch was correctly taken on the rule as written; the defect is recorded as protocol erratum E-1, and the closures (X-0004/X-0005) hold independently on effect sizes. | Protocol author, §4.4, 2026-08-19 | Sweep execution R-000014: the lockstep failure pattern across all 21 constructs — which signal drift cannot produce and universe growth must | **Check any stationarity metric against the one trend you already know the data has.** A raw-rate requirement silently embeds "the universe is constant"; on a venue that 5×'d its listings inside the window, that embedded assumption is the thing being tested. Corrected form: rate per universe-coin-day. Corollary: when a filter fails *everything in lockstep*, suspect the filter before the signal. |
+
+> **Entry #34 provenance.** Found 2026-08-20 at sweep execution; filed with the sweep
+> retrospective. The outcome did not change — the shelving holds on effect-size arithmetic
+> that survives the corrected filter — and the erratum authorizes no re-run.
+
+| **35** | **The effect-size screen was run after the sweep it should have preceded.** State-membership designs (a coin *being in* a score tail on a day) carry per-event dispersion of 300–1,450 bps against exploitable net means on the order of 10 bps; their effect ratios top out near **0.026 with free execution** against power-0.8 floors of 0.037–0.067. The orders of magnitude — daily-move dispersion, funding-scale means — were knowable before the protocol was written; the sweep spent a logged trial and a closed 21-construct grid establishing, precisely, what a one-line arithmetic screen would have flagged as unlikely. (Not waste: the funding-cancels-momentum finding and the exact numbers needed measurement. But the *shape-level* prognosis did not.) | Candidate selection, candidates doc v2–v3 | Retrospective §4 cost counterfactual: best construct 2× short of its own floor at zero execution cost | **Screen the shape before designing the test.** Every candidate states its expected per-event net mean against ~0.05 × per-event sd (with ~2× exploration decay assumed) *before* any protocol, grid, or block assignment exists. Eruptions can clear that bar; memberships do not. The cheapest failed experiment is the one the arithmetic refuses to schedule. |
+
+> **Entry #35 provenance.** Filed 2026-08-20. The bar is recorded operationally as "the
+> re-entry bar" in the candidates doc's alpha-budget section, where future candidates are
+> drafted — a lesson placed where the next decision happens, not only where the failure did.
+
 ## Process lessons (meta)
 
 - **Review the diff AND the whole.** Several errors (#17, stale "200 draws" counts, a rejected-suggestion entry contradicting an adopted rule) were merge debris invisible to diff-only review.
