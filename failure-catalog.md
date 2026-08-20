@@ -131,6 +131,13 @@ Errors were made by every participant: the human's plan drafts, the primary revi
 > re-entry bar" in the candidates doc's alpha-budget section, where future candidates are
 > drafted — a lesson placed where the next decision happens, not only where the failure did.
 
+| **36** | **A careful negative on one API tier was reported as absence of the data.** A verification agent probing Kalshi's live `/markets` endpoint concluded the CLI-era weather history was "purged: 0 retrievable station-days" — after a genuinely careful negative (every status swept, `min_close_ts` back to 2017, rate limiting ruled out with a paced 78/78-200 run, a same-form control confirming the query shape). The data was intact the whole time: Kalshi partitions at a moving ~3-month cutoff and serves everything older via `/historical/` routes, which yielded ~1,775 station-days per city back to 2021, candles included. The wrong finding nearly redesigned a research program: the venue-decision doc briefly declared the exploration corpus destroyed. | Weather-prereqs verification, 2026-08-20 | A user-relayed search tip naming the historical routes, then direct probes of the documented endpoints | **An empty result from one tier of a partitioned API is a claim about the tier, not the data.** Before concluding absence, enumerate the API's data-lifecycle tiers from its own docs/changelog ("where does old data go?" is a documented question at most venues). Rigor within one endpoint — status sweeps, pacing, controls — scopes the negative to that endpoint; it does not widen it. Renamed series compound the trap: the old tickers' history was folded into the new series name, so the legacy names return empty everywhere. |
+
+> **Entry #36 provenance.** Filed 2026-08-20 with the corrected memo
+> (`proofhouse-data/docs/2026-08-20-weather-data-prereqs.md`). The correction arrived the
+> same day, before any decision was executed on the wrong finding; the venue decision it
+> would have distorted (candidates doc v7 §4) was made on grounds that survive it.
+
 ## Process lessons (meta)
 
 - **Review the diff AND the whole.** Several errors (#17, stale "200 draws" counts, a rejected-suggestion entry contradicting an adopted rule) were merge debris invisible to diff-only review.
