@@ -366,7 +366,7 @@ that is where the original one lived.
 # Run all tests
 python -m pytest tests/ -v
 
-# 658 tests. The Phase 0 core:
+# 664 tests. The Phase 0 core:
 #   C-1…C-5:  Canonical serialization (byte-stability)
 #   H-1…H-4:  Hash chain (construction + tamper detection)
 #   B-1…B-9:  Block registry (consumption, seams, promotion, and the

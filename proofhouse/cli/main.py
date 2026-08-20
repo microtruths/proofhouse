@@ -497,7 +497,8 @@ def gate(entry_id):
     from proofhouse.core.amend import RerunRefused
     from proofhouse.core.fill import compose_filled_entry
     from proofhouse.core.gate import GateError
-    from proofhouse.core.gate_run import foreclosure_advisory, run_gate
+    from proofhouse.core.gate_run import (foreclosure_advisory, run_gate,
+                                          statistics_from_result)
     from proofhouse.eval.types import ScoredResult
 
     root = _get_root()
@@ -530,7 +531,7 @@ def gate(entry_id):
     try:
         verdict, run_id = run_gate(
             effective,
-            {scored.statistic: scored},
+            statistics_from_result(effective, scored),
             ledger,
             code_hash=manifest.get("code_hash"),
             data_hash=manifest.get("data_hash"),
@@ -637,6 +638,7 @@ def report(entry_id):
     from proofhouse.chain.hashing import content_hash
     from proofhouse.core.fill import compose_filled_entry
     from proofhouse.core.gate import GateError, evaluate_gate
+    from proofhouse.core.gate_run import statistics_from_result
     from proofhouse.core.report import build_report, render_text
     from proofhouse.eval.types import ScoredResult
 
@@ -659,8 +661,9 @@ def report(entry_id):
 
     scored = ScoredResult.from_dict(manifest["result"])
     try:
+        results = statistics_from_result(effective, scored)
         verdict = evaluate_gate(
-            effective, {scored.statistic: scored},
+            effective, results,
             block_registry=_get_block_registry(root))
     except GateError as exc:
         raise click.ClickException(str(exc))
@@ -677,7 +680,7 @@ def report(entry_id):
         ledger=_ledger(root),
         amendments=_amendment_log(root).for_entry(entry_id),
         fills=fills,
-        scored_results={scored.statistic: scored},
+        scored_results=results,
         ancestors=ancestors,
     )))
 

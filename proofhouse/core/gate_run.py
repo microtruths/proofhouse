@@ -22,6 +22,76 @@ from proofhouse.core.amend import check_rerun_lock
 from proofhouse.core.gate import compute_foreclosure, evaluate_gate
 
 
+def required_statistics(entry):
+    """Every statistic name this entry's gate will ask for.
+
+    Mirrors evaluate_gate's resolution — a criterion's own `statistic`, or
+    `gate.statistic` as the default — so callers can assemble exactly what
+    the verdict needs instead of guessing.
+    """
+    gate = entry.get("gate") or {}
+    default = gate.get("statistic")
+    names = set()
+    for crit in (gate.get("criteria") or {}).values():
+        if not isinstance(crit, dict):
+            continue
+        name = crit.get("statistic") or default
+        if name:
+            names.add(name)
+    return names
+
+
+def statistics_from_result(entry, scored):
+    """Assemble the {statistic: ScoredResult} a multi-criterion gate needs.
+
+    A manifest stores ONE result, and every CLI path built
+    `{scored.statistic: scored}` from it. A gate whose criteria name
+    different statistics was therefore unrunnable AND unreportable through
+    the supported path: the second criterion came back "never produced",
+    which is the pipeline-failure branch, so it raised rather than
+    rendering. Three call sites, one assumption, and the first real
+    two-statistic gate hit it.
+
+    SECONDARY STATISTICS COME FROM THE RESULT'S OWN METADATA. That is not a
+    loophole: metadata is part of the same recorded, content-hashed manifest
+    as the headline value, produced by the same run at the same time, so it
+    is exactly as trustworthy. What it is not is the PRIMARY measurement —
+    so a companion carries no p-value and no benchmark sweep, both of which
+    belong to the statistic that was actually scored.
+
+    Raises:
+        KeyError: naming the statistics the gate wants and the result cannot
+            supply. Refusing here, where the cause is legible, beats letting
+            evaluate_gate report a missing statistic as a broken pipeline.
+    """
+    from proofhouse.eval.types import ScoredResult
+
+    results = {scored.statistic: scored}
+    missing = []
+    for name in sorted(required_statistics(entry)):
+        if name in results:
+            continue
+        if name in (scored.metadata or {}):
+            results[name] = ScoredResult(
+                statistic=name,
+                value=scored.metadata[name],
+                trial_count=scored.trial_count,
+            )
+        else:
+            missing.append(name)
+
+    if missing:
+        raise KeyError(
+            "The gate names statistic(s) {} that the recorded result does "
+            "not carry. The manifest holds {!r} plus metadata keys {}. "
+            "Record the missing statistic in the result's metadata at "
+            "scoring time — the gate cannot be rendered without "
+            "it.".format(missing, scored.statistic,
+                         sorted(scored.metadata or {}))
+        )
+    return results
+
+
 def run_gate(entry, scored_results, ledger, code_hash, data_hash,
              amendments=None, block_registry=None, derived_inputs=None):
     """Check the lock, render the verdict, record it.

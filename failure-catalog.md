@@ -112,6 +112,13 @@ Errors were made by every participant: the human's plan drafts, the primary revi
 > called `check_executable`, inferred from a docstring; the function is `check_feasibility`.
 > **A name read out of prose is a guess.**
 
+| **33** | **The CLI assumed one statistic per gate, in three copy-pasted places.** `gate` and `report` both built `{scored.statistic: scored}` from the single result a manifest stores. A gate whose criteria name DIFFERENT statistics was therefore unrunnable and unreportable through the supported path — the second criterion resolved to "never produced", which is the pipeline-failure branch, so it raised instead of rendering a verdict. Found by the research chat while integrating H-2026-PFR3, whose gate is `clustered_t_stat >= 2.923 and mean_net_bps_per_event >= 25` — the first real two-statistic gate the tool has seen. | Phase 2c CLI, replicated to Phase 2.5's `report` | Attempting the supported path with a real multi-criterion gate | **An assumption copied to a third site is a design decision nobody made.** The single-statistic shape was never chosen; it was inherited from the first call site, where it happened to be true. Fix: one `statistics_from_result` in `core/`, shared by all three, assembling secondary statistics from the result's own metadata — same run, same content-hashed manifest, so equally trustworthy — and refusing legibly when one is genuinely absent rather than letting the gate report it as a broken pipeline. |
+
+> **Entry #33 provenance.** Fixed 2026-08-19, hours before the gate it blocks was due to run.
+> The research chat routed around it by calling `run_gate` directly, which preserves every
+> safety property; only the convenience wrapper was bypassed. Worth noting the workaround was
+> correct — the defect was in the shortcut, not the machinery.
+
 ## Process lessons (meta)
 
 - **Review the diff AND the whole.** Several errors (#17, stale "200 draws" counts, a rejected-suggestion entry contradicting an adopted rule) were merge debris invisible to diff-only review.

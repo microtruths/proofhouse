@@ -231,3 +231,111 @@ class TestForeclosureAdvisory:
         snapshot = copy.deepcopy(entry)
         foreclosure_advisory(entry, [("g1", False), ("g2", True)])
         assert entry == snapshot
+
+
+class TestAMultiCriterionGateIsRunnableThroughTheCLIPath:
+    """A manifest stores ONE result, and every CLI path built
+    `{scored.statistic: scored}` from it.
+
+    A gate whose criteria name DIFFERENT statistics was therefore unrunnable
+    and unreportable through the supported path: the second criterion came
+    back "never produced", which is the pipeline-failure branch, so it raised
+    rather than rendering a verdict. Three call sites, one assumption, and
+    the first real two-statistic gate hit it — H-2026-PFR3's gate is
+    `clustered_t_stat >= 2.923 and mean_net_bps_per_event >= 25`.
+    """
+
+    def _entry(self):
+        return {
+            "id": "H-TWO",
+            "gate": {
+                "statistic": "clustered_t_stat",
+                "combination": "g1 and g2",
+                "criteria": {
+                    "g1": {"comparator": ">=",
+                           "threshold": {"literal": "2.923"}},
+                    "g2": {"statistic": "mean_net_bps_per_event",
+                           "comparator": ">=",
+                           "threshold": {"literal": "25"}},
+                },
+            },
+        }
+
+    def test_required_statistics_covers_defaults_and_overrides(self):
+        from proofhouse.core.gate_run import required_statistics
+
+        assert required_statistics(self._entry()) == {
+            "clustered_t_stat", "mean_net_bps_per_event"}
+
+    def test_a_secondary_statistic_is_taken_from_metadata(self):
+        from proofhouse.core.gate_run import statistics_from_result
+        from proofhouse.eval.types import ScoredResult
+
+        scored = ScoredResult("clustered_t_stat", 5.8985, 5,
+                              metadata={"mean_net_bps_per_event": 189.0146})
+
+        results = statistics_from_result(self._entry(), scored)
+
+        assert set(results) == {"clustered_t_stat", "mean_net_bps_per_event"}
+        assert results["mean_net_bps_per_event"].value == 189.0146
+        assert results["clustered_t_stat"] is scored
+
+    def test_the_companion_claims_neither_p_value_nor_sweep(self):
+        """Metadata is as trustworthy as the headline value — same run, same
+        hashed manifest. What it is not is the PRIMARY measurement, and the
+        p-value and benchmark sweep belong to the statistic actually scored.
+        """
+        from proofhouse.core.gate_run import statistics_from_result
+        from proofhouse.eval.types import ScoredResult
+
+        scored = ScoredResult("clustered_t_stat", 5.8985, 5, p_value=0.001,
+                              benchmark_results={"btc": 1.0, "eq": 2.0},
+                              metadata={"mean_net_bps_per_event": 189.0146})
+
+        companion = statistics_from_result(
+            self._entry(), scored)["mean_net_bps_per_event"]
+
+        assert companion.p_value is None
+        assert companion.benchmark_results == {}
+        assert companion.trial_count == 5
+
+    def test_a_genuinely_absent_statistic_refuses_legibly(self):
+        """Refusing here, where the cause is legible, beats letting
+        evaluate_gate report it as a broken pipeline."""
+        from proofhouse.core.gate_run import statistics_from_result
+        from proofhouse.eval.types import ScoredResult
+
+        scored = ScoredResult("clustered_t_stat", 5.8985, 5, metadata={})
+
+        with pytest.raises(KeyError) as exc:
+            statistics_from_result(self._entry(), scored)
+
+        assert "mean_net_bps_per_event" in str(exc.value)
+        assert "metadata" in str(exc.value)
+
+    def test_a_single_criterion_gate_is_unaffected(self):
+        from proofhouse.core.gate_run import statistics_from_result
+        from proofhouse.eval.types import ScoredResult
+
+        entry = {"id": "H-ONE", "gate": {
+            "statistic": "ic", "combination": "g1",
+            "criteria": {"g1": {"comparator": ">=",
+                                "threshold": {"literal": "0.05"}}}}}
+        scored = ScoredResult("ic", 0.0389, 14)
+
+        assert statistics_from_result(entry, scored) == {"ic": scored}
+
+    def test_the_verdict_actually_renders_end_to_end(self):
+        """The property, not the plumbing: both criteria decide."""
+        from proofhouse.core.gate import evaluate_gate
+        from proofhouse.core.gate_run import statistics_from_result
+        from proofhouse.eval.types import ScoredResult
+
+        scored = ScoredResult("clustered_t_stat", 5.8985, 5,
+                              metadata={"mean_net_bps_per_event": 189.0146})
+        entry = self._entry()
+
+        verdict = evaluate_gate(entry, statistics_from_result(entry, scored))
+
+        assert verdict.passed is True
+        assert {c.name for c in verdict.criteria} == {"g1", "g2"}
