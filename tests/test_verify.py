@@ -331,15 +331,16 @@ class TestTheResolverAgainstTheRealCatalog:
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "failure-catalog.md")
 
-    def test_the_real_catalog_parses_to_33(self):
+    def test_the_real_catalog_parses_to_35(self):
         """Pinned to the real catalog's highest entry.
 
         Bump this when a catalog entry lands — the test failing on a new
-        entry is the pin working, not a regression. #33 landed 2026-08-19.
+        entry is the pin working, not a regression. #34 and #35 landed
+        2026-08-19 (7b8b9cc) without the bump.
         """
         resolver = catalog_citation_resolver(self.CATALOG)
         assert resolver is not None
-        assert resolver.highest == 33
+        assert resolver.highest == 35
 
     def test_emphasized_row_numbers_are_read(self):
         """'| **27** |' is the format that broke it."""
