@@ -138,6 +138,14 @@ Errors were made by every participant: the human's plan drafts, the primary revi
 > same day, before any decision was executed on the wrong finding; the venue decision it
 > would have distorted (candidates doc v7 §4) was made on grounds that survive it.
 
+| **37** | **A census keyed on a string is a census of the string.** The weather sweep's vintage-attribution census (gate C2, protocol §3.2) classified 39,684 markets' `rules_primary` by searching for "climatological report" — the phrase the recent era uses to name the NWS CLI product. The 2022-03 → 2025-03 era names the same product as "the National Weather Service's **Daily Climate Report**", so the first run misfiled **21,041 markets (53% of the corpus)** as "names no source", which would have routed most of the exploration data through the wrong admission rule. The classes were right; the classifier's operationalization of "names NWS CLI" was one phrasing wide. | Census implementation, C2 first run, 2026-08-20 | Sampling actual rules text across eras before trusting the census — the 2023 sample contained the product's other name | **Before trusting any text-classification census, sample the raw text per era/stratum and read it.** A rules-text corpus spanning years carries template rewrites; the entity being classified (a settlement source, a product, a counterparty) has multiple surface forms, and each new template era is a new chance for the classifier to silently miss. Corrected at build stage, before any gate consumed the census, and disclosed in the script docstring — the cheap version of this lesson. The expensive version is a gate branch taken on a string census nobody read. |
+
+> **Entry #37 provenance.** Filed 2026-08-21 with the weather sweep closure
+> (`proofhouse-data/docs/2026-08-20-sweep-results-weather.md` §2; rejection X-0009). The
+> census was corrected before any admission rule consumed it, so no branch was taken on the
+> wrong classification; the corrected census routed 98.2% of the corpus V-CLI and the sweep's
+> verdict is unaffected by the fix's direction.
+
 ## Process lessons (meta)
 
 - **Review the diff AND the whole.** Several errors (#17, stale "200 draws" counts, a rejected-suggestion entry contradicting an adopted rule) were merge debris invisible to diff-only review.
