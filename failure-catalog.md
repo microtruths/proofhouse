@@ -146,6 +146,22 @@ Errors were made by every participant: the human's plan drafts, the primary revi
 > wrong classification; the corrected census routed 98.2% of the corpus V-CLI and the sweep's
 > verdict is unaffected by the fix's direction.
 
+| **38** | **The trial's position in line was mistaken for the number the power tool takes.** The candidates doc (v11) assigned the weather successor's Stage B "weather-cli trial 2, z ≥ 2.209". Stage B *is* the second weather-cli trial — the ordinal was right. But `compute_power_events` takes a `trial_count` that runs one ahead: R-000016's own ledger row calls itself "the FIRST trial of the weather-cli universe ledger" and its protocol passed `trial_count 2`. So `trial_count = ordinal + 1`, 2 was already spent, and Stage B needs 3 → **z ≥ 2.6314**. The written bar was **0.42 too low**, which would have converted a genuine FAIL anywhere in 2.209–2.6314 into a reported PASS on a real experiment. | Candidates doc v11, 2026-08-21 | The candidate pipeline's judge, reading the ledger row against the doc during cycle 1 — then verified independently against the tool before the fix was applied | **A threshold quoted in prose is a rumor; the tool is the source.** Read every z off `compute_power_events` at the moment the protocol is written, with the `trial_count` derived from the ledger rather than from the sentence that names the trial. Two different numbers here share one English word ("trial"), which is exactly the shape that survives proofreading: the sentence stays true while the number goes wrong. Cheap this time only because Stage B was still unwritten — an unregistered plan is a text edit, a registered one is an amendment. |
+
+> **Entry #38 provenance.** Filed 2026-08-21 with candidates doc v12, which carries the
+> full erratum at the Stage B entry. Verified before filing: `z_threshold` depends only on
+> `trial_count` (identical 2.6314 at `trial_count 3` across two unrelated input sets), and
+> R-000016's ledger text states both its ordinal and the `trial_count` its ladder used.
+> Nothing had been registered under the stale value.
+
+| **39** | **A market-making candidate's edge was argued against a fill model it also supplied.** The pipeline's LADDER-MM candidate proposed resting two-sided quotes inside the touch on thin recurring ladders, and justified its per-event dispersion using a ~4.5¢ mark-to-market spread figure. But a binary held to resolution has per-fill sd of √(0.4 × 0.6) ≈ **0.4899** on a 40¢ contract — an order of magnitude larger. The small number came from the candidate's own assumed fill-and-flatten behavior; the strategy's profitability was being measured against a model of execution the strategy itself was proposing, rather than against the instrument's actual payoff. | Candidate pipeline cycle 1, proposer's opening slate, 2026-08-21 | The pipeline's adversary in round 1; drop concurred by the proposer, and independently over-determined by the effect-ratio screen (0.0306 against a lenient icc-zero bar, short by 2.5×) | **A simulated fill is an assumption, not a measurement — never let it set the denominator.** When a construct's edge is expressed per event, the event's dispersion must come from the instrument's realized payoff distribution, not from the strategy's own model of how it would have traded. A quoting strategy that never gets adversely selected in its own backtest has assumed away the only thing that makes quoting hard. Where a resting-order strategy is genuinely on the table, the fill model is a separate pre-registered object with its own falsification test. |
+
+> **Entry #39 provenance.** Filed 2026-08-21 from candidate cycle 1
+> (`proofhouse-data/docs/candidates/2026-08-21-cycle-01.md`), at the judge's direction. The
+> candidate was dropped in debate and never registered; no trial was spent. Recorded because
+> the circularity is a general trap for every future quoting or maker-side proposal, and it
+> was caught by argument rather than by arithmetic — the screen agreed, but only afterward.
+
 ## Process lessons (meta)
 
 - **Review the diff AND the whole.** Several errors (#17, stale "200 draws" counts, a rejected-suggestion entry contradicting an adopted rule) were merge debris invisible to diff-only review.
