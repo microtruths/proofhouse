@@ -162,6 +162,14 @@ Errors were made by every participant: the human's plan drafts, the primary revi
 > the circularity is a general trap for every future quoting or maker-side proposal, and it
 > was caught by argument rather than by arithmetic — the screen agreed, but only afterward.
 
+| **40** | **Numbers and field names quoted from memory instead of the source, five times in one debate.** In a single candidate cycle: four thresholds were quoted at the wrong trial count (the #38 shape — prose restating what only the tool may state), one number was transplanted from a different candidate's card, and — the near-miss that makes the entry — an API scan queried a field name at a JSON path where it does not exist. The response parsed cleanly and returned an absence, which would have been reported as a clean negative verdict on the construct. Only a control read (the same call against an instrument known to populate the field, which also returned absence) exposed the scan as measuring its own typo, not the market. | Candidate pipeline cycle 5 debate, 2026-09-02/03 | Round-by-round adversary sourcing checks; the field-name miss by the debater's own control read; promoted to the catalog at the judge's direction | **An absence returned by an API is evidence only after a positive control.** Any scan whose kill fires on "field absent / zero rows / no match" must first demonstrate the same query returning a presence on a known-populated case, in the same run. And field locations, trial counts, and thresholds are read from a live response or the tool at time of use — a remembered path is a guess wearing a citation. |
+
+> **Entry #40 provenance.** Filed 2026-09-03 from candidate cycle 5
+> (`proofhouse-data/docs/candidates/2026-09-02-cycle-05.md`), at the judge's direction and
+> with both debate parties recommending promotion. No wrong number reached a registration:
+> all five instances were corrected inside the debate. Recorded because the control-read
+> rule generalizes to every census and probe whose verdict can be produced by a typo.
+
 ## Process lessons (meta)
 
 - **Review the diff AND the whole.** Several errors (#17, stale "200 draws" counts, a rejected-suggestion entry contradicting an adopted rule) were merge debris invisible to diff-only review.
