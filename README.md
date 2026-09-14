@@ -93,6 +93,7 @@ proofhouse status
 | `proofhouse explore -u <universe>` | Log an exploration run (fast — <5s) |
 | `proofhouse register <file>` | Validate, hash, chain, and register a hypothesis |
 | `proofhouse fill <id> <field>` | Fill a pending field from its pinned rule. Once only |
+| `proofhouse screen <id> <id> ... --q <level> [--stage 1a\|1b] [--source-run <id>=<run>]` | Screen a batch against its recorded stage-1 runs; append a `screen` ledger row (SCR-*) |
 | `proofhouse gate <id> [--source-run <run>] [--replay]` | Render the pre-committed gate against a recorded eval run; append a `gate` ledger row |
 | `proofhouse amend <id> <file> --rationale --impact` | File an amendment: record and successor entry, together or not at all |
 | `proofhouse reject --idea --reason` | Record a rejected idea so a later partial adoption shows |
@@ -149,6 +150,72 @@ not a design, and the schema was collecting every input needed to notice while
 running none of them. Refused only when no size in `sleeve_range` works — a
 design infeasible at $2,000 and fine at $200,000 has a minimum size, not a
 defect.
+
+## Screening a family of hypotheses
+
+Testing twenty ideas and reporting the best one is the failure this tool
+exists to make expensive. Screening is how you test twenty anyway: run them
+on exploration or screen data, keep the ones worth a second look, and leave a
+record of how many there were.
+
+```bash
+proofhouse screen H-2026-A H-2026-B H-2026-C --q 0.3
+```
+
+The command reads each entry's recorded stage-1 run — the same way `gate`
+reads the run it renders a verdict against — applies the step-up procedure
+the entries registered, and writes one `screen` row (SCR-*). It runs nothing
+and consumes no block: the trials were counted when those runs were made. No
+survivors is a real outcome, not a refusal, so it exits 0; only a refusal
+exits non-zero.
+
+**The record is the batch, not the survivors.** A step-up threshold depends
+on every p-value in the family: the same p-value survives at m = 10 and fails
+at m = 200. So the row carries the batch, m, q, the method and the threshold,
+and "these three survived" stops being a claim nobody can check.
+
+### What a screened family costs
+
+- The screen row records **m** — the size of the family, in the record rather
+  than in someone's memory.
+- Each survivor that later runs on a validation block counts **one trial** on
+  its universe.
+- The stage-1 rows the screen read are **left out of the stage-2 count**.
+  `Ledger.count_trials_stage2` skips every row with `stage = 1`, and
+  `run_eval` reads that counter for a stage-2 run, which is how multiplicity
+  reaches the statistic the gate compares against a pre-committed threshold —
+  `core/gate.py` is pure and never touches the ledger, so that is the only
+  route in.
+
+Without the third point a screened batch would be paid for twice, once in the
+screen and again in every survivor's threshold, and the staged funnel would
+buy nothing over testing all m directly on validation data.
+
+### BY costs more than BH, and the cost is worth naming
+
+BH controls the false discovery rate under independence or positive
+dependence; BY controls it under any dependence, by replacing q with q/H(m).
+That is not free: at m = 50, H(m) = 4.50, so **BY at q = 0.3 behaves like BH
+at q = 0.067**. Which one applies is a registered per-entry choice, never a
+default, and a batch mixing the two is refused — a family running two
+procedures is not one family.
+
+### Validation blocks stay one hypothesis each
+
+Screening never touches validation data. A V block anywhere in the batch is
+refused before a single result is read, so nothing about screening softens
+E4: a V block is spent by exactly one hypothesis, and surviving a screen buys
+a second look, not a claim.
+
+Three other refusals, all of them the library's own words: a missing p-value
+refuses the **whole batch** (dropping the entry would shrink m and change
+every threshold), a batch spanning two universes is refused (trial counts are
+per-universe, so those entries carry different budgets), and an entry with no
+recorded stage-1 run is refused for the same reason as the missing p-value.
+
+`q` is a runtime argument rather than a registered field, deliberately:
+shrinking a batch after seeing results is sometimes right, and every screen is
+recorded, so shopping for a q is visible in the ledger rather than prevented.
 
 ## The gate
 

@@ -19,6 +19,10 @@ Phase 2.5 §5:
     proofhouse verify     — full integrity check; exit 1 on error
     proofhouse report     — findings memo
 
+Later addition:
+    proofhouse screen     — screen a batch against its recorded stage-1 runs
+                            and record the decision (a SCR-* ledger row)
+
 "explore being fast is the single most load-bearing UX property in the
  project — the parent plan identifies 'you become the leak' as the
  likeliest killer, and cheapness is the entire mitigation."
@@ -587,6 +591,116 @@ def gate(entry_id, source_run, replay):
         if replay else ""))
     if not verdict.passed:
         sys.exit(1)
+
+
+@cli.command()
+@click.argument("entry_ids", nargs=-1, required=True)
+@click.option("--q", "fdr_q", type=float, required=True,
+              help="Target false-discovery rate. Required, no default.")
+@click.option("--stage", "screen_stage", default="1a",
+              help="'1a' magnitude screen, or '1b' consistency screen.")
+@click.option("--source-run", "source_run_pairs", multiple=True,
+              metavar="ENTRY=RUN",
+              help="Screen this exact run for an entry. Defaults to the "
+                   "entry's latest stage-1 eval run.")
+def screen(entry_ids, fdr_q, screen_stage, source_run_pairs):
+    """Screen a batch of registered hypotheses. Enrichment, not proof.
+
+    Reads each entry's recorded stage-1 eval run — the same way `gate` reads
+    the run it renders a verdict against — applies the step-up procedure the
+    entries registered, and records the decision as one `screen` row.
+
+    Nothing is executed and no block is consumed here: the trials were
+    counted when the runs being read were made. Zero survivors is a real
+    outcome, not a refusal, so it exits 0; only a refusal exits non-zero.
+    """
+    from proofhouse.core.gate_run import ProvenanceRefused
+    from proofhouse.core.screen import screen_recorded_runs
+
+    root = _get_root()
+    registry = _registry(root)
+
+    entries = []
+    for entry_id in entry_ids:
+        try:
+            entries.append(registry.get_entry(entry_id))
+        except KeyError:
+            raise click.ClickException("No such entry: {}".format(entry_id))
+
+    source_runs = {}
+    for pair in source_run_pairs:
+        if "=" not in pair:
+            raise click.ClickException(
+                "--source-run takes ENTRY=RUN; got {!r}".format(pair))
+        entry_id, run_id = pair.split("=", 1)
+        source_runs[entry_id.strip()] = run_id.strip()
+
+    ledger = _ledger(root)
+    try:
+        # Every refusal is the library's own, printed as written: mixed
+        # fdr_method, a missing p-value, a V block in the batch, an unknown
+        # stage. Restating them here in the CLI's words would be a second
+        # copy to drift.
+        outcome = screen_recorded_runs(
+            entries,
+            ledger,
+            _manifests_dir(root),
+            fdr_q=fdr_q,
+            block_registry=_get_block_registry(root),
+            screen_stage=screen_stage,
+            source_runs=source_runs,
+        )
+    except ProvenanceRefused as exc:
+        raise click.ClickException(str(exc))
+    except (ValueError, KeyError) as exc:
+        raise click.ClickException(str(exc.args[0] if exc.args else exc))
+
+    fdr = outcome["fdr"]
+    survivors = outcome["survivors"]
+    surviving = set(survivors)
+
+    click.echo("batch    : {} (m={})".format(
+        ", ".join(e["id"] for e in entries), fdr["m"]))
+    click.echo("q        : {}".format(fdr_q))
+    click.echo("method   : {}".format(fdr["method"]))
+    click.echo("stage    : {}".format(screen_stage))
+    # The threshold is the whole reason the batch has to be recorded: the
+    # same p-value survives at m=10 and fails at m=200, so a survivor list
+    # without m, q and the threshold is a claim nobody can check.
+    if fdr["threshold"] is None:
+        click.echo("threshold: none passed — no rank met (k/m)*q")
+    else:
+        click.echo("threshold: {}  (largest passing (k/m)*q)".format(
+            fdr["threshold"]))
+
+    click.echo("")
+    width = max(len(e["id"]) for e in entries)
+    for entry in entries:
+        entry_id = entry["id"]
+        scored = outcome["scored_results"][entry_id]
+        click.echo("  {}  p={:<10} {}={:<12} run {}   {}".format(
+            entry_id.ljust(width), scored.p_value,
+            scored.statistic, scored.value,
+            outcome["eval_run_ids"][entry_id],
+            "SURVIVES" if entry_id in surviving else "dropped"))
+
+    click.echo("")
+    click.echo("survivors: {} of {} — {}".format(
+        len(survivors), fdr["m"],
+        ", ".join(survivors) if survivors else "none"))
+    for entry_id in outcome["no_subperiod_runs"]:
+        click.echo(
+            "  note: {} has no sub-period runs recorded, so the consistency "
+            "screen dropped it for want of a record rather than on the "
+            "check.".format(entry_id))
+
+    click.echo("\nrecorded as {} — the batch, m, q, method and threshold are "
+               "in that row, so this decision can be rebuilt from the "
+               "record.".format(outcome["screen_run_id"]))
+    click.echo(
+        "Surviving a screen is enrichment, not proof. These stage-1 runs "
+        "stay out of the stage-2 trial count; a survivor that later runs on "
+        "a validation block counts one trial on its universe.")
 
 
 @cli.command()

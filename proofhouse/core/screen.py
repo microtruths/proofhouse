@@ -9,8 +9,16 @@ Parent plan §2.3:
 Block isolation (§5.2):
     A stage-1 row touching segment V is a HARD ERROR.
 
-Stage-aware counting:
-    Stage-1 rows excluded from stage-2 multiplicity correction.
+Stage-aware counting — what a screened family costs:
+    The screen row records m, so the size of the family it came from is in
+    the record rather than in someone's memory. Each survivor that later
+    runs on a validation block counts one trial on its universe. The
+    stage-1 eval rows the screen produced are left out of the stage-2
+    count: `Ledger.count_trials_stage2` skips every row with stage=1, and
+    `run_eval` reads that counter for a stage-2 run. Without that, a
+    screened batch would be paid for twice — once in the screen and again
+    in every survivor's threshold — and the staged funnel would buy
+    nothing over testing all m directly on validation data.
 
 Transitive contamination:
     Amended descendants of a contaminated entry inherit the contamination.
@@ -159,6 +167,63 @@ def check_polarity_amendment(entry, original_entry):
     }
 
 
+def check_screen_batch(entries, screen_stage="1a"):
+    """The refusals every screen shares, whoever supplies the numbers.
+
+    Two callers run a screen: `run_screen`, which measures the batch itself,
+    and `screen_recorded_runs`, which screens runs the ledger already holds.
+    The rules below decide whether a batch is one family at all, so they must
+    read the same either way — two copies would drift, and the copy that
+    drifted would still look right on its own.
+
+    Args:
+        entries: List of registry entry dicts.
+        screen_stage: '1a' or '1b'.
+
+    Returns:
+        (fdr_method, universe) — the two batch-level facts every screen needs.
+
+    Raises:
+        ValueError: Unknown stage, empty batch, mixed or missing fdr_method,
+            or a batch spanning more than one universe.
+    """
+    if screen_stage not in ("1a", "1b"):
+        raise ValueError(
+            "screen_stage must be '1a' or '1b'; got {!r}".format(screen_stage)
+        )
+    if not entries:
+        raise ValueError("a screen requires a non-empty batch")
+
+    methods = {e.get("fdr_method") for e in entries}
+    if len(methods) > 1:
+        raise ValueError(
+            "Batch declares mixed fdr_method {}. FDR correction applies to "
+            "the family, not the individual — a batch running two procedures "
+            "has no coherent interpretation. Split it or align the entries."
+            .format(sorted(m for m in methods if m))
+        )
+    fdr_method = methods.pop()
+    if not fdr_method:
+        raise ValueError(
+            "Batch entries declare no fdr_method. Required, no default (V-14)."
+        )
+
+    # Mixed universes -> refuse, for the same reason as mixed fdr_method.
+    # Trial counts are PER-UNIVERSE (rule 7b), so entries from different
+    # universes carry different multiplicity budgets and do not belong to
+    # one FDR family. The screen record also names a single universe, so a
+    # mixed batch would be recorded under whichever entry happened to be
+    # first — a silently wrong record, which is worse than a refusal.
+    universes = {e["universe"]["id"] for e in entries}
+    if len(universes) > 1:
+        raise ValueError(
+            "Batch spans multiple universes {}. Trial counts are per-universe, "
+            "so these entries carry different multiplicity budgets and are not "
+            "one FDR family. Screen them separately.".format(sorted(universes))
+        )
+    return fdr_method, universes.pop()
+
+
 def screen_stage1a(entries, scored_results, fdr_q, fdr_method):
     """Stage 1a magnitude screen — FDR filter, then rank by magnitude.
 
@@ -258,7 +323,14 @@ def screen_stage1b(entries, scored_results, sub_period_results):
 def run_screen(entries, adapters, block_registry, ledger, score_fn,
                manifests_dir, fdr_q, screen_stage="1a",
                sub_period_adapters=None, seed=None):
-    """Screen a batch of hypotheses. The ONLY public way to run a screen.
+    """Screen a batch by measuring it now. The ONLY way to run the evals.
+
+    Two functions screen a batch, and the difference is where the numbers
+    come from. This one runs each entry through `run_eval`, so it needs the
+    researcher's adapter and scoring function and it counts a trial per
+    entry. `screen_recorded_runs` screens runs the ledger already holds,
+    runs nothing, and counts nothing; that is the path the `screen` command
+    takes. Both share the batch rules, the step-up and the screen record.
 
     Mirrors run_eval: fixed order, every guarantee inside it.
 
@@ -322,27 +394,8 @@ def run_screen(entries, adapters, block_registry, ledger, score_fn,
     """
     from proofhouse.eval.runner import run_eval
 
-    if screen_stage not in ("1a", "1b"):
-        raise ValueError(
-            "screen_stage must be '1a' or '1b'; got {!r}".format(screen_stage)
-        )
-    if not entries:
-        raise ValueError("run_screen requires a non-empty batch")
-
     # ---- Step 1: Validate the batch ----
-    methods = {e.get("fdr_method") for e in entries}
-    if len(methods) > 1:
-        raise ValueError(
-            "Batch declares mixed fdr_method {}. FDR correction applies to "
-            "the family, not the individual — a batch running two procedures "
-            "has no coherent interpretation. Split it or align the entries."
-            .format(sorted(m for m in methods if m))
-        )
-    fdr_method = methods.pop()
-    if not fdr_method:
-        raise ValueError(
-            "Batch entries declare no fdr_method. Required, no default (V-14)."
-        )
+    fdr_method, universe = check_screen_batch(entries, screen_stage)
 
     missing = [e["id"] for e in entries if e["id"] not in adapters]
     if missing:
@@ -350,21 +403,6 @@ def run_screen(entries, adapters, block_registry, ledger, score_fn,
             "No adapter supplied for {}. Every entry in the batch must run — "
             "silently skipping one would shrink m.".format(missing)
         )
-
-    # Mixed universes -> refuse, for the same reason as mixed fdr_method.
-    # Trial counts are PER-UNIVERSE (rule 7b), so entries from different
-    # universes carry different multiplicity budgets and do not belong to
-    # one FDR family. The screen record also names a single universe, so a
-    # mixed batch would be recorded under whichever entry happened to be
-    # first — a silently wrong record, which is worse than a refusal.
-    universes = {e["universe"]["id"] for e in entries}
-    if len(universes) > 1:
-        raise ValueError(
-            "Batch spans multiple universes {}. Trial counts are per-universe, "
-            "so these entries carry different multiplicity budgets and are not "
-            "one FDR family. Screen them separately.".format(sorted(universes))
-        )
-    universe = universes.pop()
 
     # ---- Step 2: Run each entry ----
     scored_results = {}
@@ -432,4 +470,150 @@ def run_screen(entries, adapters, block_registry, ledger, score_fn,
         "screen_run_id": screen_run_id,
         "eval_run_ids": eval_run_ids,
         "scored_results": scored_results,
+    }
+
+
+def _stage1_eval_rows(ledger, entry_id):
+    """Every recorded stage-1 eval run for this entry, oldest first."""
+    return [r for r in ledger.all_rows()
+            if r.get("kind") == "eval"
+            and r.get("registry_ref") == entry_id
+            and r.get("stage") == 1]
+
+
+def _subperiod_rows(ledger, parent_run_id):
+    """The sub-period runs that decompose one eval run, oldest first."""
+    return [r for r in ledger.all_rows()
+            if r.get("kind") == "subperiod"
+            and r.get("parent_run_id") == parent_run_id]
+
+
+def screen_recorded_runs(entries, ledger, manifests_dir, fdr_q,
+                         block_registry=None, screen_stage="1a",
+                         source_runs=None):
+    """Screen a batch using stage-1 runs the ledger already holds.
+
+    `run_screen` measures the batch itself: it needs a data adapter and a
+    scoring function per entry, and both are the researcher's own code. The
+    command line has neither, so this is the path the `screen` command uses,
+    and it is the same one the `gate` command takes for a single entry — the
+    numbers are recovered from a recorded run and re-checked against the
+    digests written when it ran, never handed in by the caller.
+
+    What it shares with `run_screen`: the batch rules (`check_screen_batch`),
+    the step-up procedure (`screen_stage1a`), the consistency screen
+    (`screen_stage1b`) and the screen record (`Ledger.append_screen`). What
+    it does not do is run anything, so it consumes no block and adds no eval
+    row — the trials were counted when the runs it reads were made.
+
+    Args:
+        entries: List of registry entry dicts. The batch, and therefore m.
+        ledger: Ledger instance. Read for the runs, appended to once.
+        manifests_dir: Where those runs' manifests live.
+        fdr_q: FDR q-level. Required, no default — see run_screen.
+        block_registry: Optional. Supplied, a V block anywhere in the batch
+            is refused before a single result is read.
+        screen_stage: '1a' (magnitude) or '1b' (consistency).
+        source_runs: Optional {entry_id: run_id}, to screen a run other than
+            the entry's latest stage-1 one.
+
+    Returns:
+        Dict with: survivors, fdr, screen_run_id, eval_run_ids,
+        scored_results, and no_subperiod_runs (entries the consistency
+        screen dropped for having no sub-period runs recorded).
+
+    Raises:
+        ValueError: Any batch refusal, an entry with no stage-1 run
+            recorded, or a named run that is not stage 1.
+        ProvenanceRefused: A named run's numbers are not recoverable from
+            the record — the same refusal the gate makes.
+    """
+    from proofhouse.core.gate_run import load_bound_result
+
+    fdr_method, universe = check_screen_batch(entries, screen_stage)
+
+    # Screening always reads stage-1 measurements, so a V block in the batch
+    # is refused here — before any result is read, and with the block
+    # registry's own message. Nothing is consumed on this path either way;
+    # the refusal exists because an entry whose validation data is declared
+    # is not a screening candidate, whatever happens to be in the ledger.
+    if block_registry is not None:
+        for entry in entries:
+            block_registry.enforce_block_isolation(
+                entry.get("validation_blocks") or [], 1)
+
+    source_runs = dict(source_runs or {})
+    scored_results = {}
+    eval_run_ids = {}
+    for entry in entries:
+        entry_id = entry["id"]
+        run_id = source_runs.get(entry_id)
+        if run_id is None:
+            rows = _stage1_eval_rows(ledger, entry_id)
+            if not rows:
+                raise ValueError(
+                    "No stage-1 eval run recorded for {}. Run the eval first "
+                    "— screening the rest of the batch without it would "
+                    "shrink m, and m sets every threshold in the step-up, so "
+                    "the survivor set would change.".format(entry_id)
+                )
+            run_id = rows[-1]["run_id"]
+
+        scored, row, _manifest = load_bound_result(
+            entry_id, run_id, ledger, manifests_dir)
+        if row.get("stage") != 1:
+            raise ValueError(
+                "Run {} for {} is stage {!r}, not stage 1. A screen reads "
+                "stage-1 measurements only: stage 2 is where validation data "
+                "is spent, and a screen is enrichment, not proof.".format(
+                    run_id, entry_id, row.get("stage"))
+            )
+        scored_results[entry_id] = scored
+        eval_run_ids[entry_id] = run_id
+
+    stage1a = screen_stage1a(entries, scored_results, fdr_q, fdr_method)
+    fdr = stage1a["fdr"]
+    survivors = stage1a["survivors"]
+
+    # The consistency screen reads the sub-period runs already linked to each
+    # survivor's eval row. An entry with none is dropped by screen_stage1b —
+    # named here rather than left to vanish, because a survivor disappearing
+    # for want of a record reads exactly like one that failed the check.
+    no_subperiod_runs = []
+    if screen_stage == "1b":
+        sub_period_results = {}
+        for entry_id in survivors:
+            values = []
+            for sub in _subperiod_rows(ledger, eval_run_ids[entry_id]):
+                sub_scored, _r, _m = load_bound_result(
+                    entry_id, sub["run_id"], ledger, manifests_dir)
+                values.append(sub_scored.value)
+            sub_period_results[entry_id] = values
+            if not values:
+                no_subperiod_runs.append(entry_id)
+        consistent = set(screen_stage1b(
+            list(survivors),
+            {k: v for k, v in scored_results.items() if k in set(survivors)},
+            sub_period_results,
+        ))
+        survivors = [eid for eid in survivors if eid in consistent]
+
+    screen_run_id = ledger.append_screen(
+        batch=[e["id"] for e in entries],
+        m=fdr["m"],
+        q=fdr_q,
+        method=fdr_method,
+        threshold=fdr["threshold"],
+        survivors=survivors,
+        screen_stage=screen_stage,
+        universe=universe,
+    )
+
+    return {
+        "survivors": survivors,
+        "fdr": fdr,
+        "screen_run_id": screen_run_id,
+        "eval_run_ids": eval_run_ids,
+        "scored_results": scored_results,
+        "no_subperiod_runs": no_subperiod_runs,
     }

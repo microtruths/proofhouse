@@ -16,3 +16,9 @@ never silently mid-sweep.
 | B2 | No bounded context-read into a registered block (the refusal it works around is correct and stays). Optional workflow design, not a defect. | — | Only if a bounded lookback is actually needed | same |
 
 Filed 2026-08-21.
+
+## Closed
+
+| # | Item | How it was closed |
+|---|---|---|
+| D-6 | The screening engine had no command. `run_screen`, both step-up procedures and `ledger.append_screen` all existed and were tested, but nothing outside the tests called them, so screening a batch meant writing a script by hand — the same "correct code, no caller" shape S-2 exists to catch, one level above where S-2 looks. | Closed 2026-09-14. `proofhouse screen` added. It screens the stage-1 runs the ledger already holds, the way `gate` reads the run it renders a verdict against, and records the batch, m, q, method and threshold as a `screen` row. The batch rules now live in one place (`check_screen_batch`), shared by the command and by `run_screen`. |

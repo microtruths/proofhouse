@@ -415,6 +415,115 @@ class TestStage1bPath(ScreenTestBase):
         self.assertEqual(row["screen_stage"], "1b")
 
 
+class TestScreenedFamilyTrialCount(ScreenTestBase):
+    """What a screened family costs, pinned end to end.
+
+    The policy, in one sentence: the screen row records m; each survivor
+    that later runs on a validation block counts one trial on its universe;
+    the stage-1 eval rows the screen produced stay out of the stage-2 count.
+
+    The counter that matters is `count_trials_stage2`. `run_eval` reads it
+    for a stage-2 run and hands the number to score_fn, which is how
+    multiplicity reaches the statistic the gate compares against a
+    pre-committed threshold — `core/gate.py` is pure and never touches the
+    ledger, so this is the only route in. If that counter ever stopped
+    excluding stage-1 rows, a screened batch would be paid for twice and the
+    staged funnel would buy nothing over testing all m directly on
+    validation data.
+    """
+
+    def _blocks_with_validation(self):
+        from proofhouse.core.blocks import BlockRegistry
+
+        br = BlockRegistry()
+        br.add_block({
+            "id": "B-1", "start": "2025-01-01T00:00:00Z",
+            "end": "2025-03-01T00:00:00Z", "segment": "S1",
+            "data_complete": True, "completed_at": "2025-03-02T00:00:00Z",
+            "sources": ["csv"], "seams": [],
+        })
+        br.add_block({
+            "id": "B-V", "start": "2025-03-01T00:00:00Z",
+            "end": "2025-05-01T00:00:00Z", "segment": "V",
+            "data_complete": True, "completed_at": "2025-05-02T00:00:00Z",
+            "sources": ["csv"], "seams": [],
+        })
+        return br
+
+    def test_screened_family_costs_one_trial_per_survivor(self):
+        from proofhouse.core.screen import run_screen
+        from proofhouse.eval.runner import run_eval
+        from proofhouse.eval.types import Diagnostics, ScoredResult
+
+        blocks = self._blocks_with_validation()
+        ledger = self._ledger()
+
+        # ---- Three hypotheses screened as one family at stage 1 ----
+        pvals = [0.001, 0.02, 0.9]
+        entries, adapters = [], {}
+        for i, _p in enumerate(pvals):
+            eid = "H-{:02d}".format(i)
+            entries.append(self._entry(eid))
+            adapters[eid] = _Adapter("sha256:d{}".format(i))
+
+        # Distinct values so the survivor ranking (by magnitude) is fixed.
+        cursor = [(p, 0.05 - 0.001 * i) for i, p in enumerate(pvals)]
+
+        def stage1_score_fn(predictions, outcomes, trial_count):
+            p, value = cursor.pop(0)
+            return (
+                ScoredResult(statistic="panel_ic", value=value,
+                             trial_count=trial_count, p_value=p),
+                Diagnostics({}),
+            )
+
+        screened = run_screen(
+            entries, adapters, blocks, ledger, stage1_score_fn,
+            self.manifests, fdr_q=0.05,
+        )
+
+        # m = 3 at q = 0.05: the step-up thresholds are 0.0167, 0.0333 and
+        # 0.05, so the largest passing rank is 2 (0.02 <= 0.0333) and 0.9 is
+        # dropped.
+        self.assertEqual(screened["survivors"], ["H-00", "H-01"])
+
+        # m is in the record, which is the only place it can be checked from.
+        screen_row = [r for r in ledger.all_rows() if r["kind"] == "screen"][0]
+        self.assertEqual(screen_row["m"], 3)
+        self.assertEqual(screen_row["batch"], ["H-00", "H-01", "H-02"])
+
+        # Three stage-1 trials counted; the screen row itself counts nothing.
+        self.assertEqual(ledger.count_trials("u"), 3)
+        self.assertEqual(ledger.count_trials_stage2("u"), 0)
+
+        # ---- The survivor then runs on a validation block ----
+        survivor = dict(entries[0])
+        survivor["validation_blocks"] = ["B-V"]
+        seen = {}
+
+        def stage2_score_fn(predictions, outcomes, trial_count):
+            seen["trial_count"] = trial_count
+            return (
+                ScoredResult(statistic="panel_ic", value=0.04,
+                             trial_count=trial_count, p_value=0.03),
+                Diagnostics({}),
+            )
+
+        run_eval(
+            survivor, _Adapter("sha256:validation"), blocks, ledger,
+            stage=2, score_fn=stage2_score_fn, manifests_dir=self.manifests,
+        )
+
+        # THE PIN: the stage-2 run saw one trial, not three and not four.
+        # The screened family raised the stage-2 bar by nothing.
+        self.assertEqual(seen["trial_count"], 1)
+
+        # And afterwards the survivor's own run is the one trial on record
+        # for stage-2 purposes, while the full count still carries all four.
+        self.assertEqual(ledger.count_trials_stage2("u"), 1)
+        self.assertEqual(ledger.count_trials("u"), 4)
+
+
 class TestMixedUniverse(ScreenTestBase):
     """Trial counts are per-universe, so a cross-universe batch is not one
     FDR family — and the screen record can only name one universe."""
