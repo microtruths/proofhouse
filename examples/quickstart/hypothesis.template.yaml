@@ -1,0 +1,118 @@
+# The demo hypothesis. start_demo.py copies this file into your demo
+# directory as hypothesis.yaml with the two PIN_ placeholders filled from
+# the hash of toy_strategy.py. Every other line is registered as written.
+#
+# The gate below is deliberately set so the demo's recorded verdict is
+# stated in the README. Change the threshold and you will see the gate
+# render a different verdict against the same recorded run only through an
+# amendment: a registered entry cannot be edited in place.
+
+schema_version: 2
+id: H-2026-DEMO
+created_utc: "2026-10-11T00:00:00Z"
+status: registered
+depends_on: []
+
+mechanism:
+  class: toy-model
+  counterparty: >-
+    Nobody. The data is a synthetic return series shipped with the demo, so
+    there is no participant on the other side of the trade. A real entry
+    names who pays for the edge and why they keep paying.
+  claim: >-
+    In the demo series, one day's return carries information about the next
+    day's return in the same direction.
+  expected_effect_size: "0.5"
+  expected_decay: >-
+    Not applicable. The series is synthetic and fixed.
+
+signal:
+  inputs: [return]
+  transform: >-
+    Prediction for day t is the return on day t minus lookback_days, times
+    polarity. Outcome for day t is the return on day t. The statistic is the
+    Spearman rank correlation between the two.
+  frequency: daily
+  combination: panel_ic
+  parameters:
+    polarity: 1
+    lookback_days: 1
+  implementation:
+    path: PIN_PATH
+    sha256: PIN_SHA256
+  benchmark_sensitivity:
+    benchmarks: [zero-benchmark, mean-subtraction]
+
+universe:
+  id: demo
+  venues: [synthetic]
+  instruments: >-
+    One synthetic daily return series, 2024-01-01 to 2024-02-29, shipped as
+    returns.csv.
+
+feasibility:
+  min_order_notional_usd: "10"
+  sleeve_range: ["100", "20000"]
+  instruments_held: 1
+  rebalance_band: "0.15"
+
+costs:
+  model_ref: costs/demo-zero-cost
+
+gate:
+  statistic: panel_ic
+  combination: "g1"
+  criteria:
+    g1:
+      comparator: ">"
+      threshold:
+        literal: "0.05"
+  benchmark: zero-benchmark
+  benchmark_justification: >-
+    A synthetic series has no market factor to subtract. The benchmark is
+    zero, declared so the field is not blank by accident.
+  benchmark_sensitivity: [zero-benchmark, mean-subtraction]
+  on_pass: >-
+    Nothing. The demo licenses no deployment of anything.
+  on_fail: >-
+    The block is spent. A revised hypothesis validates on blocks that did
+    not exist when this one was registered.
+
+# Required at schema version 2, no default. One-sided because polarity is a
+# registered parameter: the direction was fixed before the data was read.
+p_value_sidedness: one-sided
+
+# Required at schema version 2, no default. BY controls the false discovery
+# rate under any dependence; the demo has one hypothesis, so the choice has
+# no effect here, but it still has to be made in writing.
+fdr_method: by
+fdr_method_justification: >-
+  One hypothesis on one block. BY is declared because it is the safe choice
+  when a later family might share this universe.
+
+pass_licenses: >-
+  Nothing beyond the sentence "the demo gate passed".
+pass_does_not_establish: >-
+  Anything about real markets, real data, or real strategies.
+
+live_gate:
+  min_duration_weeks: 1
+
+validation_blocks: [demo-2024-01]
+seam_acknowledged: false
+
+diagnostics: []
+
+# Filled once by `proofhouse fill H-2026-DEMO power_check`. The Sharpe rule's
+# power is bounded by the span alone: with one two-month block it will be
+# flagged as underpowered whatever the effect size. That is the rule working.
+power_check:
+  inputs:
+    effect_size: "0.5"
+    blocks: 1
+    prior_trials: 1
+  value:
+    pending: true
+    fill_rule: "power(effect_size, blocks, prior_trials)"
+
+prior_art: []

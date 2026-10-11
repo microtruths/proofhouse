@@ -2,6 +2,29 @@
 
 Personal research harness — makes it mechanically hard to fool yourself while looking for edge.
 
+## For agents
+
+If you are an agent running experiments for someone, this tool is the record
+that you did not fool them, or yourself. Reach for it when:
+
+- a result might get real money or a real decision behind it;
+- you have tried variants for a while and cannot honestly say how many;
+- you are about to read data that can only be read once;
+- someone will later ask *"how many things did you try?"*.
+
+The mechanism fits in a paragraph. You write the hypothesis and its pass/fail
+rule down before looking. The tool hashes it into a chain so it cannot be
+edited afterwards, counts every test you run including the ones you abandon,
+refuses to let validation data be spent twice, and renders pass or fail with
+no interpretation. Changes go through amendments that leave a numbered record.
+Nothing about how it does this is hidden; a pre-registration tool whose
+workings were secret would prove nothing to anyone.
+
+The guide written for agents is [`.claude/skills/proofhouse/SKILL.md`](.claude/skills/proofhouse/SKILL.md).
+Claude Code loads it automatically inside this repository; copy the directory
+into your own project's `.claude/skills/` to use it there. [`AGENTS.md`](AGENTS.md)
+carries the short version for other agent tools.
+
 ## What it's for
 
 When you test a lot of ideas against the same data, the best-looking one is usually
@@ -59,29 +82,61 @@ end to end from the CLI.
 
 ## Quick start
 
+The demo registers a toy hypothesis, evaluates it on one validation block, and
+renders the verdict. It takes about a minute. Run it in an empty directory;
+the setup script refuses to overwrite anything.
+
 ```bash
-# Install
-pip install -e ".[dev]"
+# Install from a clone. An editable install needs pip 21.3 or newer, and the
+# Python that ships with macOS has an older one, so upgrade pip first.
+git clone https://github.com/microtruths/proofhouse
+python -m pip install --upgrade pip
+pip install -e "proofhouse[dev]"
 
-# Initialize a project
+# Set up a demo directory. start_demo.py copies the toy strategy, its data,
+# a block file and the eval script here, and pins the strategy by hash into
+# hypothesis.yaml.
+mkdir demo && cd demo
 proofhouse init
+python ../proofhouse/examples/quickstart/start_demo.py
 
-# Log an exploration run (<5 seconds)
-proofhouse explore --universe hl-perps-top20
+# Declare the data block, log an exploration run, register the hypothesis
+proofhouse blocks add block.yaml
+proofhouse explore --universe demo
+proofhouse register hypothesis.yaml
 
-# Register a hypothesis
-proofhouse register fixtures/agentcopy_v10_ic_gate.yaml
+# Fill the power check from its pinned rule. Once only.
+proofhouse fill H-2026-DEMO power_check
 
-# Fill a field registered as pending, from its pinned rule
-proofhouse fill H-2026-AC10 power_check
+# Record the eval run. There is no `proofhouse eval` command: an eval is a
+# library call, because the tool cannot know how to load your data or score
+# your strategy. run_eval.py is the smallest honest version of that call.
+python run_eval.py
 
-# Render the gate against this entry's latest recorded eval run.
-# Exits non-zero on a fail.
-proofhouse gate H-2026-AC10
-
-# Check status
+# Render the gate against the recorded run (exits 1 on a fail), then the
+# findings memo, then the integrity check.
+proofhouse gate H-2026-DEMO
+proofhouse report H-2026-DEMO
+proofhouse verify --catalog ../proofhouse/failure-catalog.md
 proofhouse status
 ```
+
+What the demo records, and why each line is the tool working rather than a
+problem with the demo:
+
+| Step | Output | Why |
+|---|---|---|
+| `fill` | power 0.073, **FLAGGED** | The Sharpe power rule is bounded by the span alone. One two-month block cannot reach power 0.5 for any effect size. Recorded, not blocked. |
+| `run_eval.py` | `panel_ic = -0.0276`, p 0.58 | The toy's one-day momentum has no edge in the synthetic series. The runner consumed the V block, wrote a manifest, and appended a ledger row carrying the result's digest. |
+| `gate` | **FAIL**, exit 1 | -0.0276 against `> 0.05`, no interpretation. |
+| `report` | `BOUND`, and "sensitivity sweep missing" | The verdict was recomputed from the recorded result and agrees. The entry declares two benchmarks and the demo runs neither, so the memo says a single-benchmark number is not yet a finding. |
+| `verify` | 0 errors, 1 warning | The block ended in February 2024 and the entry was registered in 2026, so the data existed at registration. That is a holdout, not an embargo, and the warning says the claim rests on attestation. |
+
+Run `python run_eval.py` a second time and the runner records a second run
+rather than refusing: a replay with no intervening amendment is deliberately
+allowed. What it will not do is let a gate be re-rendered after an amendment
+on data the first gate already saw. That rule is enforced at the gate, and the
+[re-run lock](#amendments-and-the-re-run-lock) section explains it.
 
 ## CLI commands
 
@@ -475,6 +530,13 @@ document cited catalog entry #26 for three weeks while the catalog ended at
 #25. Citations are checked in every prose field, not just `prior_art`, because
 that is where the original one lived.
 
+`verify` resolves those citations against `failure-catalog.md` in the project
+root. A project that installed the tool with pip has no such file, so every
+citation is reported as UNCHECKED and a note says so. UNCHECKED is a
+reporting class, not a failure: pass `--catalog <path to the clone's
+failure-catalog.md>` and the check runs. Shipping the catalog with the
+package is backlog item D-8.
+
 ### Schema versions
 
 Every entry carries the `schema_version` it was registered under, and
@@ -500,6 +562,11 @@ checked, which is not the same as clean.
 | `agentcopy_v10_ic_gate.yaml` | Single criterion, literal threshold. A recorded FAIL (IC 0.0389 vs >= 0.05) |
 | `tasteprint_experiment.yaml` | Domain-agnosticism — the core knows nothing about markets |
 | `v11_w6_behavioral_alpha.yaml` | Three criteria, per-criterion statistics, a derived threshold, and a recorded all-three-FAIL verdict |
+
+The two AgentCopy fixtures are retro-filed records from a real research
+program, kept as they were registered because a reader needs to see a real
+entry, failed gates included. The demo entry under `examples/quickstart/` is
+the synthetic one.
 
 ## Tests
 

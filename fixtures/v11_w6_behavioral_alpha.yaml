@@ -1,7 +1,7 @@
 # v11 Behavioral Alpha — retro-filed fixture (W6 state)
 #
-# Source: V11_PRE_REGISTRATION_LOCKED.md §1.7 / Registration 5, and
-# AMENDMENT_A12_EARLY_RESOLUTION.md §A12.2.
+# Source: the v11 pre-registration (locked) §1.7 / Registration 5, and
+# amendment A12 §A12.2. Both are private research records.
 #
 # The first fixture with a MULTI-CRITERION gate, per-criterion statistics, and
 # a genuinely derived threshold. Both earlier fixtures are single-criterion
@@ -9,7 +9,7 @@
 # foreclosure advisory had never run against a registered entry — only against
 # entries synthesized inside tests.
 #
-# RECORDED OUTCOME (W6_VALIDATION_RESULTS.md, executed 2026-07-30):
+# RECORDED OUTCOME (W6 validation results, private record, executed 2026-07-30):
 #   S2 gross (Construct C) = -10,729 bps over the 61-day test period
 #   Gate 1 (S2 > S1)          FAIL   — S1 = +15,958
 #   Gate 2 (median S2 > 0)    FAIL

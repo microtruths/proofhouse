@@ -9,13 +9,16 @@ never silently mid-sweep.
 
 | # | Item | Impact | Revive condition | Source record |
 |---|---|---|---|---|
-| D-5 | `proofhouse explore` writes repeated `-b`/`-s` flag values as ONE comma-joined string where earlier ledger rows carry proper lists (e.g. R-000015's `blocks_touched`). Content complete, rows chained — recorded rows stand as-is; fix forward only. Workaround: pass a single flag value. | Cosmetic/parsing (a consumer that assumes list-of-ids must split on commas) | Next time the `explore` CLI is touched for any reason | `proofhouse-data/docs/2026-08-20-retrospective-eruptions-sweep.md` §3 (tools) |
+| D-5 | `proofhouse explore` writes repeated `-b`/`-s` flag values as ONE comma-joined string where earlier ledger rows carry proper lists (e.g. R-000015's `blocks_touched`). Content complete, rows chained — recorded rows stand as-is; fix forward only. Workaround: pass a single flag value. | Cosmetic/parsing (a consumer that assumes list-of-ids must split on commas) | Next time the `explore` CLI is touched for any reason | Eruptions sweep retrospective, 2026-08-20, §3 (private research record) |
+| D-7 | There is no `proofhouse eval` command. Recording an eval run means writing a script around `run_eval` (`examples/quickstart/run_eval.py` is the template). The quick start shows the script honestly rather than hiding the gap. | Every new user writes the same twenty lines; the README cannot be CLI-only | When a second adapter exists, or when the first outside user asks for it | This file, 2026-10-11 (public-release plan) |
+| D-8 | `verify` looks for `failure-catalog.md` in the project root and otherwise reports every catalog citation as UNCHECKED. A pip-installed user has no catalog unless they pass `--catalog <path to the clone>`. | A stranger reads UNCHECKED as breakage | When the first UNCHECKED report is mistaken for a failure; fix is to ship the catalog as package data and read it by default | same |
+| D-9 | `proofhouse init` does not write `AGENTS.md` or the agent skill into the research project, so an agent working in a project that uses the tool has to be pointed at the clone. | Adoption friction, not integrity | After the first outside adoption | same |
 | B1 | `verify` does not flag an unpinned entry (readiness, not integrity). Three live entries (PFR1–PFR3) are unpinned; their blocks are spent by PFR4, so under the proposed severity rule they render as warnings and `verify` stays at 0 errors. | A future gating registration could reach its gate unpinned without warning | Before registering the next entry that will actually gate | `docs/plans/2026-08-19-bind-eval-to-verdict.md` (B-table) |
 | B3 | Threshold changes are captured in amendment diffs (e.g. A-0001's `gate.criteria.g1.threshold.literal`) but not labelled/disclosed as revisions. | Disclosure gap, not a lost record | When the next entry's thresholds are edited pre-gate | same |
 | B4 | `power_check` is not inherited across an amendment; the successor's `pending: true` field is a known stale-field trap (see the navigation skill's warning). PFR4 was corrected manually via F-0002 with byte-identical inputs. | Reporting convenience; stale `pending` fields mislead readers | When a successor is next registered with an unchanged power rule | same |
 | B2 | No bounded context-read into a registered block (the refusal it works around is correct and stays). Optional workflow design, not a defect. | — | Only if a bounded lookback is actually needed | same |
 
-Filed 2026-08-21.
+Filed 2026-08-21. D-7 to D-9 filed 2026-10-11.
 
 ## Closed
 

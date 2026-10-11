@@ -1,0 +1,11 @@
+# The demo's one data block. A block is a span of data with a segment that
+# says what it may be used for. V means validation: one hypothesis may spend
+# it, once, and only at stage 2. The demo spends this block.
+id: demo-2024-01
+start: "2024-01-01"
+end: "2024-02-29"
+segment: V
+data_complete: true
+completed_at: "2024-03-15"
+sources: [returns.csv]
+seams: []
