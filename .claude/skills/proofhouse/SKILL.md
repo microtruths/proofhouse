@@ -63,7 +63,8 @@ derives depends on the trial count.
 
 | Fact | Where it actually lives |
 |---|---|
-| Gate verdicts | `.proofhouse/manifests/R-*.yaml` and `proofhouse report` |
+| Gate verdicts | gate rows (`kind: gate`) in `.proofhouse/ledger/ledger.jsonl`, read with `proofhouse report` |
+| Eval results and their provenance | `.proofhouse/manifests/R-*.yaml`, one per eval run |
 | Power-check and other fills | `.proofhouse/fills/fills.jsonl` (F-*) |
 | Trial counts, per universe | `.proofhouse/ledger/ledger.jsonl` |
 | Block segments and consumption | `.proofhouse/blocks/blocks.yaml` |
@@ -80,7 +81,7 @@ project's.
 ```
 proofhouse init                        # create .proofhouse/ in the current directory
 proofhouse blocks add <yaml>           # declare a data block (id, start, end, segment, data_complete, ...)
-proofhouse blocks list|promote|acknowledge
+proofhouse blocks list|complete|promote|acknowledge
 proofhouse explore -u <universe>       # log an exploration run; counts as a trial
 proofhouse register <yaml>             # validate, hash, chain, store a hypothesis
 proofhouse fill <id> <field>           # fill a pending field from its pinned rule, once
@@ -107,7 +108,10 @@ result that did not pass through it has no manifest and cannot be gated.
 
 ## The workflow, in order
 
-1. `init`, then `blocks add` for each data block you will declare.
+1. `init`, in a new directory or at the root of the project's git
+   repository. It runs `git init` when the current directory has no `.git`
+   of its own, so a subfolder of an existing repository would get a nested
+   one. Then `blocks add` for each data block you will declare.
 2. `explore` for every exploratory run. Per campaign is acceptable; per fit is
    stricter. Pick one and say which in the project's notes.
 3. Pin the artifact. `signal.implementation` on the entry carries the path
@@ -123,6 +127,31 @@ result that did not pass through it has no manifest and cannot be gated.
    `--replay` and excluded from the trial count.
 8. `report`, then `verify`. Commit `.proofhouse/` to the project's git.
    A registry that lives only on one disk is a local file, not a record.
+
+## Changing an entry after a verdict
+
+The moment after a verdict is when nudging a threshold is most tempting, so
+this is the path to know cold.
+
+1. Copy the parent's YAML to a new file. Give it a new id and add
+   `depends_on: [<parent id>]`. Make the change in that file. The file is the
+   whole successor entry, not a diff; `amend` computes the diff and records
+   it.
+2. Set `validation_blocks: []` unless you can name a block that did not exist
+   when the change was made. `amend` accepts a successor that re-declares a
+   block its parent spent, and `verify` then reports a permanent error
+   (backlog D-10). The record is append-only, so that error never clears.
+3. `proofhouse amend <parent id> <file> --rationale "..." --impact "..."`.
+   One amendment record (A-*) and one successor entry, together or not at
+   all.
+4. Expect refusals and read them: the successor has no eval run; it may not
+   gate on the parent's run; a new eval on the spent block is refused; a
+   re-gate or replay of the parent after the amendment is refused as the
+   cardinal sin. Each refusal says what to do instead. The honest end state
+   is a successor waiting for data that postdates it.
+
+A refusal from `run_eval` arrives as a Python exception whose message carries
+the reason. It is not a crash, and nothing is recorded when it fires.
 
 ## Blocks and segments
 

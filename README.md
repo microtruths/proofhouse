@@ -93,9 +93,10 @@ git clone https://github.com/microtruths/proofhouse
 python -m pip install --upgrade pip
 pip install -e "proofhouse[dev]"
 
-# Set up a demo directory. start_demo.py copies the toy strategy, its data,
-# a block file and the eval script here, and pins the strategy by hash into
-# hypothesis.yaml.
+# Set up a demo directory. init creates .proofhouse/ and runs git init when
+# the directory has no .git of its own. start_demo.py copies the toy
+# strategy, its data, a block file and the eval script here, and pins the
+# strategy by hash into hypothesis.yaml.
 mkdir demo && cd demo
 proofhouse init
 python ../proofhouse/examples/quickstart/start_demo.py
@@ -131,12 +132,51 @@ problem with the demo:
 | `gate` | **FAIL**, exit 1 | -0.0276 against `> 0.05`, no interpretation. |
 | `report` | `BOUND`, and "sensitivity sweep missing" | The verdict was recomputed from the recorded result and agrees. The entry declares two benchmarks and the demo runs neither, so the memo says a single-benchmark number is not yet a finding. |
 | `verify` | 0 errors, 1 warning | The block ended in February 2024 and the entry was registered in 2026, so the data existed at registration. That is a holdout, not an embargo, and the warning says the claim rests on attestation. |
+| `status` | block `available`, `consumed_by=['H-2026-DEMO']`; `PENDING=['power_check=FLAGGED']` | `available` means the block's data is complete, not that it is unspent; `consumed_by` is the spend. The filled power check still shows under PENDING with its flag because the entry file is immutable and the fill lives in `.proofhouse/fills/`. Both wordings are backlog item D-13. |
 
 Run `python run_eval.py` a second time and the runner records a second run
-rather than refusing: a replay with no intervening amendment is deliberately
-allowed. What it will not do is let a gate be re-rendered after an amendment
-on data the first gate already saw. That rule is enforced at the gate, and the
-[re-run lock](#amendments-and-the-re-run-lock) section explains it.
+rather than refusing, and a plain `gate` on that run records a second
+verdict: the lock is per entry and source run, and a replay with no
+intervening amendment is deliberately allowed. The number is the same because
+the artifact is pinned and the data is hashed. The score function inside
+`run_eval.py` is not pinned, which is backlog item D-12. What the tool will
+not do is let a gate be re-rendered after an amendment on data the first gate
+already saw. That rule is enforced at the gate, the
+[re-run lock](#amendments-and-the-re-run-lock) section explains it, and the
+walkthrough below shows it.
+
+### Changing an entry after a verdict
+
+The moment after a verdict is when nudging a threshold is most tempting, so
+the demo should show what happens. Suppose you want the threshold at 0.00
+instead of 0.05 now that you have seen the number.
+
+1. A registered entry cannot be edited in place. Copy `hypothesis.yaml` to a
+   new file, give it a new id, add `depends_on: [H-2026-DEMO]`, and make the
+   change there. The file is the whole successor entry, not a diff; `amend`
+   computes the diff.
+2. Set `validation_blocks: []`. The parent spent `demo-2024-01`, and a
+   successor that re-declares a spent block is accepted by `amend` today but
+   sits as a permanent `verify` error (backlog item D-10). A real successor
+   names a block that did not exist when the change was made.
+3. File it. One amendment record and one successor entry, together or not
+   at all:
+
+   ```bash
+   proofhouse amend H-2026-DEMO successor.yaml --rationale "saw the number, want 0.00" --impact "none: no new verdict is possible on spent data"
+   ```
+
+4. Try for a verdict. `gate H-2026-DEMO2` refuses: no eval run. Gating it
+   against the parent's run refuses: a successor gating on its parent's
+   measurement would be claiming a result it never ran. A new eval on the
+   spent block refuses: the block is consumed. Re-gating or replaying the
+   parent refuses: a window already spent under a different specification
+   is the cardinal sin.
+
+Every one of those refusals is the tool working. The honest end state of the
+demo is a successor waiting for data that postdates it, which the demo does
+not have. A refusal from `run_eval` arrives as a Python exception whose
+message carries the reason; nothing is recorded when it fires.
 
 ## CLI commands
 
@@ -574,7 +614,7 @@ the synthetic one.
 # Run all tests
 python -m pytest tests/ -v
 
-# 664 tests. The Phase 0 core:
+# 761 tests. The Phase 0 core:
 #   C-1…C-5:  Canonical serialization (byte-stability)
 #   H-1…H-4:  Hash chain (construction + tamper detection)
 #   B-1…B-9:  Block registry (consumption, seams, promotion, and the

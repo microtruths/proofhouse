@@ -54,8 +54,7 @@ def main():
     for name in COPIED + [WRITTEN]:
         print("  {}".format(name))
     print("Pinned toy_strategy.py as {}".format(pin["sha256"]))
-    print("\nNext:")
-    print("  proofhouse init")
+    print("\nNext (after `proofhouse init`, if you have not run it here yet):")
     print("  proofhouse blocks add block.yaml")
     print("  proofhouse explore --universe demo")
     print("  proofhouse register hypothesis.yaml")

@@ -2,10 +2,11 @@
 # directory as hypothesis.yaml with the two PIN_ placeholders filled from
 # the hash of toy_strategy.py. Every other line is registered as written.
 #
-# The gate below is deliberately set so the demo's recorded verdict is
-# stated in the README. Change the threshold and you will see the gate
-# render a different verdict against the same recorded run only through an
-# amendment: a registered entry cannot be edited in place.
+# The gate below is set so the demo's recorded verdict is the one the
+# README states. Once registered, this file's words are fixed: a change is
+# an amendment that registers a successor entry, and the successor cannot
+# gate on data the parent already spent. The README section "Changing an
+# entry after a verdict" walks through what happens if you try.
 
 schema_version: 2
 id: H-2026-DEMO
