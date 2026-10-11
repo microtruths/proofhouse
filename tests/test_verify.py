@@ -27,6 +27,7 @@ from proofhouse.core.fill import FillLog
 from proofhouse.core.ledger import Ledger
 from proofhouse.core.registry import Registry
 from proofhouse.core.verify import catalog_citation_resolver, verify_all
+from proofhouse.schema.versions import SCHEMA_VERSION
 
 FIXTURE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -331,16 +332,19 @@ class TestTheResolverAgainstTheRealCatalog:
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "failure-catalog.md")
 
-    def test_the_real_catalog_parses_to_35(self):
+    def test_the_real_catalog_parses_to_41(self):
         """Pinned to the real catalog's highest entry.
 
         Bump this when a catalog entry lands — the test failing on a new
         entry is the pin working, not a regression. #34 and #35 landed
-        2026-08-19 (7b8b9cc) without the bump.
+        2026-08-19 (7b8b9cc) without the bump; #36 to #41 landed between
+        2026-08-20 and 2026-09-05 (be842eb to 63ad6c5) without it, and the
+        pin sat red for five weeks. Bumped to 41 on 2026-10-11 after reading
+        the regexes over the file: entries 1 to 41, no gaps, no false hits.
         """
         resolver = catalog_citation_resolver(self.CATALOG)
         assert resolver is not None
-        assert resolver.highest == 35
+        assert resolver.highest == 41
 
     def test_emphasized_row_numbers_are_read(self):
         """'| **27** |' is the format that broke it."""
@@ -617,7 +621,7 @@ class TestAnEntryThatCanNeverGateSaysSo:
         return registry
 
     def _entry(self, entry_id, vblocks):
-        return {"id": entry_id, "schema_version": 1,
+        return {"id": entry_id, "schema_version": SCHEMA_VERSION,
                 "created_utc": "2026-08-19T00:00:00Z",
                 "validation_blocks": list(vblocks)}
 
@@ -714,7 +718,7 @@ class TestSupersessionIsInferredFromDescent:
         return registry
 
     def _entry(self, entry_id, vblocks, depends=()):
-        return {"id": entry_id, "schema_version": 1,
+        return {"id": entry_id, "schema_version": SCHEMA_VERSION,
                 "created_utc": "2026-08-19T00:00:00Z",
                 "depends_on": list(depends),
                 "validation_blocks": list(vblocks)}

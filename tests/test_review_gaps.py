@@ -14,12 +14,14 @@ import shutil
 import tempfile
 import unittest
 
+from proofhouse.schema.versions import SCHEMA_VERSION
+
 
 def _valid_entry(entry_id="H-2026-001", **overrides):
     """A schema-valid entry. Inlined rather than imported from another test
     module — pytest does not put sibling test files on sys.path."""
     e = {
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "id": entry_id,
         "depends_on": [],
         "mechanism": {

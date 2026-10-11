@@ -51,7 +51,7 @@
 # a real finding about the tool meeting a real registration, not a gap in the
 # fixture.
 
-schema_version: 1
+schema_version: 2
 id: H-2026-V11W6
 created_utc: "2026-07-22T00:00:00Z"
 status: registered

@@ -19,6 +19,8 @@ import tempfile
 
 import pytest
 
+from proofhouse.schema.versions import SCHEMA_VERSION
+
 
 # A toy strategy artifact for integration testing
 _TOY_STRATEGY = '''
@@ -61,7 +63,7 @@ def _make_entry(pin, tmpdir):
     """Build a complete entry for integration testing."""
     return {
         "id": "int-test-001",
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "name": "Integration test entry",
         "created_utc": "2026-08-16T00:00:00Z",
         "status": "registered",

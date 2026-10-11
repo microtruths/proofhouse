@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from proofhouse.chain.canonical import decimal_str
 from proofhouse.chain.chain import verify_chain
 from proofhouse.chain.hashing import content_hash
+from proofhouse.schema.versions import SCHEMA_VERSION
 
 
 def _run_number(run_id):
@@ -375,7 +376,17 @@ def file_amendment(registry, amendment_log, entry_id, amended_entry,
 
     # Refuse an empty diff BEFORE registering, so a no-op amendment does not
     # leave a registered successor behind after the record is rejected.
-    if not diff_entries(parent, amended_entry):
+    #
+    # Diffed as it WILL BE REGISTERED, not as handed in. The registry stamps
+    # schema_version on everything it writes, so a successor copied from an
+    # older template differs from its parent in that field alone: it passed
+    # this check, registered at the current version, and the log then
+    # refused the empty diff — a registered successor with no record, which
+    # is the gap this function exists to close. Found the day the schema
+    # version moved from 1 to 2.
+    as_registered = dict(amended_entry)
+    as_registered["schema_version"] = SCHEMA_VERSION
+    if not diff_entries(parent, as_registered):
         raise ValueError(
             "Amendment for {} has an empty diff — nothing changed.".format(
                 entry_id)

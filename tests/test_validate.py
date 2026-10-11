@@ -10,12 +10,13 @@ import pytest
 
 from proofhouse.core.blocks import BlockRegistry
 from proofhouse.schema.validate import validate_entry, ValidationError
+from proofhouse.schema.versions import SCHEMA_VERSION
 
 
 def _make_valid_entry():
     """Return a minimally valid entry that passes all checks."""
     return {
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "id": "H-2026-001",
         "created_utc": "2026-08-20T14:03:11Z",
         "status": "registered",
@@ -355,8 +356,18 @@ class TestValidation:
         with pytest.raises(ValidationError, match="V-11"):
             validate_entry(entry)
 
-    def test_v11_valid_schema_version_accepted(self):
-        """V-11 complement: schema_version = 1 → accepted."""
+    def test_v11_current_schema_version_accepted(self):
+        """V-11 complement: the version this build writes → accepted."""
+        entry = _make_valid_entry()
+        entry["schema_version"] = SCHEMA_VERSION
+        validate_entry(entry)
+
+    def test_v11_legacy_schema_version_1_accepted(self):
+        """V-11 complement: a record from schema version 1 is still readable.
+
+        Legacy compatibility, so the literal stays a literal. What v1 is and
+        is not held to is pinned in tests/test_schema_v2.py.
+        """
         entry = _make_valid_entry()
         entry["schema_version"] = 1
         validate_entry(entry)

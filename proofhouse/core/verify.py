@@ -30,7 +30,7 @@ import os
 from proofhouse.core.amend import check_amendment_ordering
 from proofhouse.core.manifest import manifest_digest, result_digest
 from proofhouse.schema.validate import ValidationError, validate_entry
-from proofhouse.schema.versions import SCHEMA_VERSION
+from proofhouse.schema.versions import SCHEMA_VERSION, is_valid_version
 
 
 # A THIRD SEVERITY, AND WHY IT IS NOT A WARNING.
@@ -150,29 +150,66 @@ def _check_schema(entries, block_registry, findings):
     """Every record validates under ITS OWN recorded schema_version.
 
     Validating everything against the current version would report a v1 record
-    as broken the moment v2 lands, which trains you to ignore the check.
+    as broken the moment v2 lands, which trains you to ignore the check. That
+    is exactly what happened: V-13 and V-14 became required on 2026-08-17 with
+    no version bump, and two untouched v1 records failed verify for weeks.
+
+    Skipping every record not at the current version is the opposite failure.
+    A record written invalid under v1 — a registration that bypassed the
+    validator, a hand-built file with a correct hash — would read as verified
+    for as long as the tool stayed ahead of it, and the chain check cannot see
+    it: the chain proves the bytes are unchanged, not that they were ever
+    valid.
+
+    So each record is re-validated under the rules of the version it carries
+    (the validator dispatches on schema_version), and a legacy version is then
+    REPORTED, once, with what the current rules would make of it. A version
+    this build does not know fails V-11 and is an error: the record cannot be
+    checked, which is not the same as clean.
     """
     for entry in entries:
+        where = entry.get("id", "?")
         version = entry.get("schema_version")
         if version is None:
             findings.append(Finding(
-                "schema", "error", entry.get("id", "?"),
+                "schema", "error", where,
                 "no schema_version — the record cannot state which rules it "
                 "was written under"))
             continue
-        if version != SCHEMA_VERSION:
-            # A record from an older schema is not an error. It is only an
-            # error if we cannot check it, which we say explicitly.
-            findings.append(Finding(
-                "schema", "warning", entry.get("id", "?"),
-                "recorded under schema_version {} while the tool is at {}; "
-                "not re-validated".format(version, SCHEMA_VERSION)))
-            continue
+
         try:
             validate_entry(entry, block_registry=block_registry)
         except ValidationError as exc:
-            findings.append(Finding(
-                "schema", "error", entry.get("id", "?"), str(exc)))
+            findings.append(Finding("schema", "error", where, str(exc)))
+
+        if not (is_valid_version(version) and version < SCHEMA_VERSION):
+            continue
+
+        # A legacy record is not an error. It is not a current record either,
+        # and the two must not read the same. Say which rules it was held to
+        # and whether the current rules would also pass it. For a record that
+        # predates a required field they will not, and the field cannot be
+        # filled in after the fact — the record stays what it was registered
+        # as, and a successor registered through `amend` declares the choice.
+        probe = dict(entry)
+        probe["schema_version"] = SCHEMA_VERSION
+        try:
+            validate_entry(probe, block_registry=block_registry)
+        except ValidationError as exc:
+            verdict = (
+                "The v{} rules would refuse it ({}), and those choices cannot "
+                "be made for a record after the fact — it stays a v{} "
+                "record.".format(
+                    SCHEMA_VERSION,
+                    "; ".join(e.split(". ")[0] for e in exc.errors),
+                    version))
+        else:
+            verdict = "It also satisfies the v{} rules.".format(SCHEMA_VERSION)
+        findings.append(Finding(
+            "schema", "warning", where,
+            "recorded under schema_version {} while the tool writes {}; "
+            "re-validated under the v{} rules it was registered under. "
+            "{}".format(version, SCHEMA_VERSION, version, verdict)))
 
 
 def _check_blocks(block_registry, findings):

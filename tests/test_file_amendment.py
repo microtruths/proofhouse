@@ -121,6 +121,24 @@ class TestBothHalvesOrNeither:
         with pytest.raises(KeyError):
             registry.get_entry("H-2026-AC10-A1")
 
+    def test_a_stale_schema_version_alone_is_not_a_change(self, setup):
+        """The registry stamps schema_version on everything it writes. A
+        successor copied from an older template differs from its parent in
+        that field alone; the empty-diff check must see what will be
+        registered, or the successor registers and the log then refuses an
+        empty diff — one half written. Found when the version moved to 2."""
+        registry, log, parent, blocks = setup
+        successor = _successor(parent)
+        successor["schema_version"] = 1
+
+        with pytest.raises(ValueError, match="empty diff"):
+            file_amendment(registry, log, parent["id"], successor,
+                           rationale="r", impact="i")
+
+        assert log.for_entry(parent["id"]) == []
+        with pytest.raises(KeyError):
+            registry.get_entry("H-2026-AC10-A1")
+
     def test_missing_rationale_writes_neither(self, setup):
         registry, log, parent, blocks = setup
         successor = _successor(parent, id="H-X")

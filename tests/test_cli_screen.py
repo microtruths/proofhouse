@@ -22,6 +22,7 @@ import unittest
 from click.testing import CliRunner
 
 from proofhouse.cli.main import cli
+from proofhouse.schema.versions import SCHEMA_VERSION
 
 
 ARTIFACT = """
@@ -46,7 +47,7 @@ def _entry(entry_id, pin, blocks, fdr_method="bh"):
     """A registrable entry. Shaped after tests/test_integration.py."""
     return {
         "id": entry_id,
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "name": "Screen CLI test entry",
         "created_utc": "2026-09-14T00:00:00Z",
         "status": "registered",

@@ -22,10 +22,12 @@ import shutil
 import tempfile
 import unittest
 
+from proofhouse.schema.versions import SCHEMA_VERSION
+
 
 def _entry(entry_id="H-2026-001", **overrides):
     e = {
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "id": entry_id,
         "depends_on": [],
         "mechanism": {

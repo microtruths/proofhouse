@@ -13,6 +13,7 @@ import pytest
 from proofhouse.core.blocks import BlockRegistry
 from proofhouse.core.registry import Registry
 from proofhouse.schema.validate import ValidationError
+from proofhouse.schema.versions import SCHEMA_VERSION
 
 
 def _make_valid_entry(entry_id="H-2026-001"):
@@ -90,7 +91,7 @@ class TestRegistry:
 
         assert result["id"] == "H-2026-001"
         assert result["status"] == "registered"
-        assert result["schema_version"] == 1
+        assert result["schema_version"] == SCHEMA_VERSION
         assert result["hash"].startswith("sha256:")
         assert "prev" not in result  # Genesis
 

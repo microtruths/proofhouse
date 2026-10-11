@@ -111,7 +111,7 @@ proofhouse/
   schema/          # Record types, validation, schema versioning
     models.py      # Entry schema with full field set
     validate.py    # 6 enforced checks (E1–E6) + 17 validators (V1–V17)
-    versions.py    # SCHEMA_VERSION = 1
+    versions.py    # SCHEMA_VERSION = 2 — v2 made sidedness and the FDR method required
   chain/           # Hash chain (no imports from core/)
     canonical.py   # Deterministic JSON serialization
     hashing.py     # SHA-256 content hashing
@@ -474,6 +474,24 @@ The dangling-citation check is failure catalog #26 mechanized: a locked
 document cited catalog entry #26 for three weeks while the catalog ended at
 #25. Citations are checked in every prose field, not just `prior_art`, because
 that is where the original one lived.
+
+### Schema versions
+
+Every entry carries the `schema_version` it was registered under, and
+`verify` re-validates it under that version's rules, not the current ones.
+Version 1 is the Phase 0 shape. Version 2 (2026-10-11) adds three required
+fields with no default: `p_value_sidedness`, `fdr_method` and
+`fdr_method_justification`. Those had been required since 2026-08-17 without
+a bump, so every older record failed `verify` under rules it was never
+registered under — the bump is the repair, not a new rule.
+
+A v1 record is a **warning**: re-validated under v1, reported once, with
+whether the v2 rules would also pass it. Nothing is filled in on its behalf.
+The sidedness and FDR choices decide every p-value and cannot be reconstructed
+after the fact, so a v1 record stays a v1 record; a successor registered
+through `amend` is written at the current version and must declare them. A
+record from a version this build does not know is an **error**: it cannot be
+checked, which is not the same as clean.
 
 ## Fixtures
 

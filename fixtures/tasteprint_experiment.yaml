@@ -3,7 +3,7 @@
 # Domain-agnosticism test: if this costs schema hacks, the schema is wrong.
 # This is a survey-based taste profiling experiment, not a financial hypothesis.
 
-schema_version: 1
+schema_version: 2
 id: H-2026-TP01
 created_utc: "2026-08-14T00:00:00Z"
 status: registered

@@ -24,9 +24,11 @@ V-9:  depends_on referencing nonexistent entry → rejected
 V-10: power_check.value.pending without fill_rule → rejected
 V-11: schema_version must be present and valid
 V-12: feasibility.sleeve_range must be a 2-element list of decimal strings
-V-13: p_value_sidedness required, no default (one-sided | two-sided)
+V-13: p_value_sidedness required, no default (one-sided | two-sided).
+      Defines schema version 2; a record carrying a valid earlier version
+      is not asked for it (schema/versions.py)
 V-14: fdr_method required, no default (bh | by), with a stated
-      dependence justification
+      dependence justification. Schema version 2, as V-13
 V-15: literal gate thresholds must be finite (-inf passes unconditionally,
       inf/nan fail unconditionally, 1e400 overflows silently)
 V-16: power_events requires a declared clustering unit — the icc is
@@ -45,7 +47,11 @@ from proofhouse.schema.models import (
     VALID_SIDEDNESS,
     is_benchmark_term,
 )
-from proofhouse.schema.versions import check_version
+from proofhouse.schema.versions import (
+    SIDEDNESS_AND_FDR_SINCE,
+    check_version,
+    is_valid_version,
+)
 
 
 class ValidationError(Exception):
@@ -89,6 +95,16 @@ def validate_entry(entry, block_registry=None, existing_entries=None):
             check_version(sv)
         except ValueError as e:
             errors.append("V-11: {}".format(e))
+
+    # Which rules the record is held to. V-13 and V-14 define schema
+    # version 2: a record carrying a valid version from before them was
+    # registered when the fields did not exist, and the choices they record
+    # cannot be made for it after the fact. A missing or invalid version
+    # earns no exemption — V-11 has already refused it, and the strict
+    # reading costs nothing. Every other check applies to every version.
+    predates_sidedness_and_fdr = (
+        is_valid_version(sv) and sv < SIDEDNESS_AND_FDR_SINCE
+    )
 
     # V-12: feasibility.sleeve_range must be [min, max] decimal strings
     sleeve_range = _nested_get(entry, "feasibility", "sleeve_range")
@@ -282,8 +298,13 @@ def validate_entry(entry, block_registry=None, existing_entries=None):
     #
     # Two-sided remains available for mechanisms that genuinely do not
     # imply a sign.
+    #
+    # Schema version 2 and later. A v1 record predates the field; see
+    # `predates_sidedness_and_fdr` above.
     sidedness = entry.get("p_value_sidedness")
-    if not sidedness:
+    if predates_sidedness_and_fdr:
+        pass
+    elif not sidedness:
         errors.append(
             "V-13: p_value_sidedness is missing. Required, no default "
             "(one-sided | two-sided). The choice halves or doubles every "
@@ -306,8 +327,12 @@ def validate_entry(entry, block_registry=None, existing_entries=None):
     #
     # The justification is required because writing "hypotheses are
     # independent" is what forces you to notice when they are not.
+    #
+    # Schema version 2 and later, as V-13.
     fdr = entry.get("fdr_method")
-    if not fdr:
+    if predates_sidedness_and_fdr:
+        pass
+    elif not fdr:
         errors.append(
             "V-14: fdr_method is missing. Required, no default (bh | by). "
             "BH assumes independence or positive regression dependence; BY "
