@@ -17,6 +17,7 @@ import yaml
 
 from proofhouse.chain.chain import verify_chain
 from proofhouse.chain.hashing import content_hash
+from proofhouse.core.blocks import _SINGLE_USE_SEGMENTS
 from proofhouse.schema.validate import validate_entry, ValidationError
 from proofhouse.schema.versions import SCHEMA_VERSION
 
@@ -371,6 +372,56 @@ class Registry:
                             )
                         ),
                     })
+
+        # ------------------------------------------------------------------
+        # A declared single-use block that anyone has already spent.
+        #
+        # E4 makes a V block single-use: consume_block refuses it for any
+        # entry but the one that spent it. So an entry declaring such a block
+        # can never gate on it, whoever the spender was — its own lineage (a
+        # successor copied from a gated parent, BACKLOG D-10) or a stranger.
+        # `verify` already reports both as an error. Reporting at
+        # registration, while the choice is still open, is the whole point:
+        # the record is append-only, and a successor that carried the spent
+        # block in sat as an error no later successor could clear.
+        #
+        # The invalidating-amendment branch above has its own, more specific
+        # message for the lineage case when an effect size or polarity moved;
+        # this check is what runs when nothing invalidating changed, and for
+        # a plain registration. Unspent blocks declared by a parent remain
+        # reusable by its successor: fresh means unspent, not undeclared.
+        # ------------------------------------------------------------------
+        if self._block_registry is not None:
+            ancestors = self.ancestor_ids(entry)
+            spent_lines = []
+            for block_id in entry.get("validation_blocks") or []:
+                try:
+                    block = self._block_registry.get_block(block_id)
+                except KeyError:
+                    continue        # V-8 / E6 territory, reported there
+                if block.get("segment") not in _SINGLE_USE_SEGMENTS:
+                    continue
+                spenders = sorted({
+                    c.get("entry_id")
+                    for c in block.get("consumed_by") or []
+                    if c.get("entry_id") and c.get("entry_id") != entry.get("id")
+                })
+                if not spenders:
+                    continue
+                relation = ("in this entry's own lineage"
+                            if any(s in ancestors for s in spenders)
+                            else "not related to this entry")
+                spent_lines.append("{} (spent by {}, {})".format(
+                    block_id, ", ".join(spenders), relation))
+            if spent_lines:
+                raise ValidationError([
+                    "validation_blocks declare a block already spent: {}. A "
+                    "validation block is spent once (E4), so this entry could "
+                    "never gate on it and would sit as a permanent verify "
+                    "error. For a successor that only records a change, set "
+                    "validation_blocks: []. To validate again, name blocks "
+                    "that postdate the change.".format("; ".join(spent_lines))
+                ])
 
         # Hash and chain
         entry.pop("hash", None)

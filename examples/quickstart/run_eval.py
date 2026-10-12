@@ -1,13 +1,20 @@
 """Record the demo's evaluation run.
 
 proofhouse has no `eval` command. An evaluation is a library call,
-`run_eval`, because the tool cannot know how to load your data or score your
-strategy. This script is the smallest honest version of that call: it loads
-the demo's returns file, hands the pinned artifact and a score function to
-the runner, and the runner does the rest in a fixed order: verify the pin,
-check block isolation, consume the block, run the artifact, score it with the
-trial count read from the ledger, write a manifest, and append a chained
-ledger row carrying the result's digest.
+`run_eval`, because the tool cannot know how to load your data. This script
+is the smallest honest version of that call: it loads the demo's returns
+file and hands the adapter to the runner. The runner does the rest in a
+fixed order: verify the pin, read the score function from the pinned
+artifact, check block isolation, refuse a second measurement on a block this
+entry already measured, consume the block, run the artifact, score it with
+the trial count read from the ledger, write a manifest that records where
+the score function came from, and append a chained ledger row carrying the
+result's digest.
+
+There is no score function in this file. It lives in toy_strategy.py, next
+to the strategy, so the one pin covers both. Pass `score_fn=` to `run_eval`
+only if you must, and expect `verify` to warn that the statistic's
+computation was attested rather than verified.
 
 Run it from the demo directory after `proofhouse register hypothesis.yaml`.
 """
@@ -20,8 +27,6 @@ from proofhouse.core.blocks import BlockRegistry
 from proofhouse.core.ledger import Ledger
 from proofhouse.core.registry import Registry
 from proofhouse.eval.runner import run_eval
-from proofhouse.eval.stats import p_from_t, panel_ic, spearman_t
-from proofhouse.eval.types import Diagnostics, ScoredResult
 
 ENTRY_ID = "H-2026-DEMO"
 
@@ -36,32 +41,6 @@ def find_root(start):
         if parent == path:
             return None
         path = parent
-
-
-def score_fn(predictions, outcomes, trial_count):
-    """Turn the artifact's output into a gate-evaluable result.
-
-    `trial_count` arrives from the runner, which read it from the ledger.
-    A score function must use that number and never compute its own.
-    """
-    n = len(predictions)
-    ic = panel_ic(predictions, outcomes)
-    t = spearman_t(ic, n)
-    p = p_from_t(t, n - 2, "one-sided")
-    scored = ScoredResult(
-        statistic="panel_ic",
-        value=ic,
-        trial_count=trial_count,
-        p_value=p,
-        n_effective=n,
-        n_effective_basis="one trading day; the series is synthetic and "
-                          "its days are not clustered",
-        metadata={"n": n, "t": t},
-    )
-    diagnostics = Diagnostics()
-    diagnostics.add("n_pairs", n)
-    diagnostics.add("first_five_predictions", predictions[:5])
-    return scored, diagnostics
 
 
 def main():
@@ -85,15 +64,20 @@ def main():
     adapter = CSVAdapter(os.path.join(root, "returns.csv"))
     ledger = Ledger(os.path.join(ph, "ledger", "ledger.jsonl"))
 
-    result = run_eval(
-        entry=entry,
-        adapter=adapter,
-        block_registry=blocks,
-        ledger=ledger,
-        stage=2,
-        score_fn=score_fn,
-        manifests_dir=os.path.join(ph, "manifests"),
-    )
+    try:
+        result = run_eval(
+            entry=entry,
+            adapter=adapter,
+            block_registry=blocks,
+            ledger=ledger,
+            stage=2,
+            manifests_dir=os.path.join(ph, "manifests"),
+        )
+    except ValueError as exc:
+        # A refusal, not a crash: the runner checked something before
+        # spending anything, and the message says what and what to do.
+        print("REFUSED: {}".format(exc))
+        return 1
 
     scored = result.scored
     print("{}  eval run recorded as {}".format(ENTRY_ID, result.run_id))
@@ -101,6 +85,11 @@ def main():
     print("  p_value     : {:.4f} (one-sided)".format(scored.p_value))
     print("  trial_count : {} (read from the ledger by the runner)".format(
         scored.trial_count))
+    print("  scoring     : {} ({})".format(
+        result.manifest["scoring"]["source"],
+        "covered by the artifact pin"
+        if result.manifest["scoring"]["source"] == "artifact"
+        else "supplied by this script, not pinned"))
     print("  blocks spent: {}".format(entry.get("validation_blocks")))
     print("  manifest    : .proofhouse/manifests/{}.yaml".format(result.run_id))
     print("Next: proofhouse gate {}".format(ENTRY_ID))

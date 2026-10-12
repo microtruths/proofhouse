@@ -37,14 +37,23 @@ def reload(ledger):
 
 def record_eval(ledger, manifests_dir, entry, scored,
                 code_hash="c1", data_hash="d1", kind="eval",
-                registry_ref=None, digests=True):
+                registry_ref=None, digests=True, scoring="pinned"):
     """Record an eval run the way run_eval does, and return its run_id.
 
     Args:
         digests: False writes a LEGACY row — one from before the manifest
             digest existed. Not a synthetic case: R-000012 is exactly this,
             and 'unverifiable' has to be demonstrable against it.
+        scoring: "pinned" writes the scoring block run_eval writes when the
+            score function came from the pinned artifact; "caller" the
+            attested-only form; None omits the block, which is what every
+            manifest written before the score-function pin looks like.
     """
+    scoring_block = None
+    if scoring == "pinned":
+        scoring_block = {"source": "artifact", "code_hash": code_hash}
+    elif scoring == "caller":
+        scoring_block = {"source": "caller", "code_hash": None}
     manifest = {
         "run_id": None,
         "ts_utc": "2026-08-19T12:00:00Z",
@@ -59,6 +68,8 @@ def record_eval(ledger, manifests_dir, entry, scored,
         "wall_clock_seconds": 1.5,
         "result": scored.to_dict(),
     }
+    if scoring_block is not None:
+        manifest["scoring"] = scoring_block
 
     ledger.append_row(
         code_hash=code_hash,

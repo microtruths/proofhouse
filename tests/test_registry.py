@@ -303,7 +303,14 @@ class TestFreshBlocksMeansUNSPENTNotUNDECLARED:
             registry.register(self._entry("H-S", ["B1"], effect="9.9",
                                           depends=["H-P"]))
 
-    def test_a_non_invalidating_amendment_never_reaches_the_check(self):
+    def test_a_non_invalidating_amendment_is_still_refused_a_spent_block(self):
+        """BACKLOG D-10, closed 2026-10-12. This test used to assert that a
+        non-invalidating amendment 'never reaches the check' and registered
+        fine while re-declaring a block its parent had spent. The successor
+        could never gate on it (E4) and `verify` held a permanent error, which
+        the stranger-agent test hit by copying a gated parent and changing
+        the threshold. The invalidating branch keeps its own message; this is
+        the general refusal that runs when nothing invalidating changed."""
         blocks = self._blocks()
         registry = self._registry(blocks)
         registry.register(self._entry("H-P", ["B1"]))
@@ -311,14 +318,23 @@ class TestFreshBlocksMeansUNSPENTNotUNDECLARED:
 
         successor = self._entry("H-S", ["B1"], depends=["H-P"])
         successor["costs"] = {"model_ref": "costs/hl-maker-v2"}
-        registry.register(successor)
+        with pytest.raises(ValidationError) as exc:
+            registry.register(successor)
 
-    def test_a_siblings_consumption_is_not_this_checks_error(self):
+        message = str(exc.value)
+        assert "B1" in message
+        assert "H-P" in message
+        assert "own lineage" in message
+        assert "validation_blocks: []" in message
+
+    def test_a_siblings_consumption_is_refused_as_a_strangers(self):
         """B and C both descend from A. B spends a block, C reuses it.
 
-        B is not an ancestor of C, so this check does not see it and E4
-        refuses at gate time instead. Recorded so the omission is deliberate
-        rather than overlooked.
+        B is not an ancestor of C, so the lineage check does not see it.
+        This used to be accepted here and left to E4 at gate time, which
+        meant registering an entry the tool would later refuse to run. Since
+        BACKLOG D-10 (2026-10-12) the general spent-block refusal catches it
+        at registration and names the spender as unrelated.
         """
         blocks = self._blocks()
         registry = self._registry(blocks)
@@ -327,8 +343,13 @@ class TestFreshBlocksMeansUNSPENTNotUNDECLARED:
                                       depends=["H-A"]))
         blocks.consume_block("B2", "H-B")
 
-        registry.register(self._entry("H-C", ["B2"], effect="9.9",
-                                      depends=["H-A"]))
+        with pytest.raises(ValidationError) as exc:
+            registry.register(self._entry("H-C", ["B2"], effect="9.9",
+                                          depends=["H-A"]))
+        message = str(exc.value)
+        assert "B2" in message
+        assert "H-B" in message
+        assert "not related" in message
 
     def test_a_permitted_reuse_does_not_claim_fresh_blocks(self):
         """The note said 'this entry validates on fresh blocks'. Allowing

@@ -667,6 +667,29 @@ def _check_eval_row(row, run_id, manifests_dir, findings):
             "are a measurement OF.".format(
                 recorded_manifest, actual_manifest)))
 
+    # Scoring provenance, three classes. The artifact's output is pinned;
+    # whether the code that turned it into the gated statistic was too is
+    # recorded in the manifest since the score-function pin (BACKLOG D-12).
+    # A manifest without the block predates the pin and cannot be checked;
+    # that is not the same as clean, so it is UNVERIFIABLE rather than
+    # silent. A caller-supplied score function is a weaker claim, reported
+    # as a warning, not refused: it was legal when it ran and still is.
+    scoring = manifest.get("scoring")
+    if not scoring:
+        findings.append(Finding(
+            "scoring", UNVERIFIABLE, run_id,
+            "the manifest records no scoring provenance: this run predates "
+            "the score-function pin, so whether the pinned artifact computed "
+            "the statistic cannot be checked."))
+    elif scoring.get("source") == "caller":
+        findings.append(Finding(
+            "scoring", "warning", run_id,
+            "the score function was supplied by the caller, not read from "
+            "the pinned artifact. The artifact's output is pinned; the code "
+            "that turned it into the gated statistic is not, so the number "
+            "is attested rather than verified. Define score_fn in the "
+            "artifact and drop the score_fn argument."))
+
 
 def _recorded_statistics(result):
     """{statistic: canonical decimal string} for every gate-evaluable value.

@@ -225,6 +225,35 @@ def _bound(entry, row, ledger, manifests_dir, block_registry, derived_inputs):
             "recorded result ({}), and the two agree criterion by "
             "criterion.".format(row.get("run_id"), source_id,
                                 row.get("result_hash"))),
+        "scoring": _scoring_provenance(manifest),
+    }
+
+
+def _scoring_provenance(manifest):
+    """What the manifest says about who computed the gated statistic.
+
+    Three states, matching `verify`'s three classes: pinned (the score
+    function came from the pinned artifact), caller (supplied by the eval
+    script, attested only), and unverifiable (the run predates the pin).
+    """
+    scoring = (manifest or {}).get("scoring")
+    if not scoring:
+        return {
+            "status": "unverifiable",
+            "note": ("this run predates the score-function pin; whether the "
+                     "pinned artifact computed the statistic cannot be "
+                     "checked"),
+        }
+    if scoring.get("source") == "artifact":
+        return {
+            "status": "pinned",
+            "note": "score function read from the pinned artifact ({})".format(
+                scoring.get("code_hash")),
+        }
+    return {
+        "status": "caller",
+        "note": ("score function supplied by the caller, not pinned; the "
+                 "statistic's computation is attested, not verified"),
     }
 
 
@@ -601,6 +630,10 @@ def render_text(report):
     else:
         add("{}. {}".format(prov.get("status", "unverifiable").upper(),
                             prov.get("note")))
+    scoring = prov.get("scoring")
+    if scoring:
+        add("scoring: {}. {}".format(scoring["status"].upper(),
+                                     scoring["note"]))
 
     add("\n--- Gate ---")
     add("combination: {}".format(report["combination"]))

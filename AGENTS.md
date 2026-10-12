@@ -45,8 +45,9 @@ proofhouse status
 
 There is no `proofhouse eval` command. An evaluation is a library call,
 `proofhouse.eval.runner.run_eval`; `examples/quickstart/run_eval.py` is the
-smallest honest version. The README's quick start runs the whole flow in
-about a minute.
+smallest honest version. The score function lives in the pinned artifact as
+`score_fn`, next to the strategy, so one pin covers both. The README's quick
+start runs the whole flow in about a minute.
 
 ## Working in this repository
 

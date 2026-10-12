@@ -34,12 +34,15 @@ Parent plan §5.3:
 """
 
 import importlib.util
+import inspect
+import os
 import platform
 import time
 from datetime import datetime, timezone
 
 from proofhouse.chain.canonical import decimal_str
 from proofhouse.core.artifact_pin import verify_pin
+from proofhouse.core.blocks import _SINGLE_USE_SEGMENTS
 from proofhouse.eval.types import ScoredResult, Diagnostics
 
 
@@ -66,7 +69,7 @@ class EvalResult:
 
 
 def run_eval(entry, adapter, block_registry, ledger,
-             stage, score_fn, manifests_dir, seed=None,
+             stage, score_fn=None, manifests_dir=None, seed=None,
              ledger_kind="eval", parent_run_id=None):
     """Execute a complete evaluation run with all safety guarantees.
 
@@ -131,6 +134,11 @@ def run_eval(entry, adapter, block_registry, ledger,
         segments.add(block.get("segment", ""))
     segment = segments.pop() if len(segments) == 1 else "mixed"
 
+    if manifests_dir is None:
+        raise ValueError(
+            "manifests_dir is required: a result without a manifest is not a "
+            "result (§5.3).")
+
     # ---- Step 1: Verify artifact pin ----
     # This is the wall, not the tripwire. If the hash doesn't match,
     # execution is refused. Nothing below this line runs.
@@ -186,6 +194,33 @@ def run_eval(entry, adapter, block_registry, ledger,
                     )
                 )
 
+    # ---- Step 4b: One eval per single-use block per entry ----
+    # consume_block is idempotent for the same entry on purpose: a block can
+    # be read as reserve, promoted, then validated by the entry that read it.
+    # So the block registry cannot tell a second measurement from the first,
+    # and a second eval on a spent V block was recorded, then gated again
+    # (BACKLOG D-12). The ledger can tell: an eval row for this entry that
+    # touched the block means the measurement was taken. Checked before
+    # consumption so that nothing is spent on a refused run. Subperiod runs
+    # decompose a parent eval and must carry parent_run_id; they are not a
+    # second measurement.
+    if ledger_kind == "eval":
+        _refuse_second_eval(entry_id, validation_blocks, block_registry,
+                            ledger)
+
+    # ---- Step 4c: Load the artifact and resolve the score function ----
+    # The artifact's output is pinned by step 1. The code that turns that
+    # output into the gated statistic used to be a callable the caller
+    # handed in, covered by nothing (BACKLOG D-12). It now lives in the
+    # pinned artifact by default, and when a callable is supplied the
+    # manifest records where it came from, so `verify` and `report` can say
+    # whether the statistic's computation was verified or merely attested.
+    # Resolved here, still before anything is consumed, so a missing score
+    # function refuses without spending a block.
+    module = _load_artifact(artifact_path)
+    score_fn, scoring = _resolve_score_fn(
+        score_fn, module, artifact_path, expected_hash)
+
     # ---- Step 5: Consume blocks ----
     # Record that this entry has touched these blocks. V-blocks are
     # single-use (E4/A7). This is where the consumption ledger that
@@ -200,7 +235,7 @@ def run_eval(entry, adapter, block_registry, ledger,
     # Parameters come from the entry, not from embedded constants.
     # This makes polarity drift unrepresentable.
     t_start = time.monotonic()
-    raw_result = _load_and_run_artifact(artifact_path, data, parameters)
+    raw_result = _run_artifact(module, data, parameters)
     t_elapsed = time.monotonic() - t_start
 
     # The artifact returns (predictions, outcomes)
@@ -246,6 +281,10 @@ def run_eval(entry, adapter, block_registry, ledger,
         registry_ref=entry_id,
     )
     manifest["wall_clock_seconds"] = round(t_elapsed, 3)
+    # Where the score function came from. Inside the manifest digest, so
+    # inside the chain: a later reader can check whether the pinned artifact
+    # computed the statistic (BACKLOG D-12).
+    manifest["scoring"] = scoring
 
     # THE RESULT ITSELF, not only its provenance.
     #
@@ -359,21 +398,13 @@ def run_eval(entry, adapter, block_registry, ledger,
 #   - proofhouse.core.artifact_pin.compute_artifact_hash
 # ---------------------------------------------------------------------------
 
-def _load_and_run_artifact(artifact_path, data, parameters):
-    """Load a strategy artifact and execute it with parameters from the entry.
+def _load_artifact(artifact_path):
+    """Load a strategy artifact as a module.
 
-    The artifact must define a `run(data, parameters)` function. Parameters
-    come from `signal.parameters` in the registry entry — the artifact reads
-    them as arguments, not as embedded constants. This makes polarity drift
-    unrepresentable.
-
-    Args:
-        artifact_path: Path to the Python artifact.
-        data: Data to pass to the strategy (list of (date, value) tuples).
-        parameters: Dict of parameters from signal.parameters.
-
-    Returns:
-        The return value of the artifact's run() function.
+    The artifact must define `run(data, parameters)`. It may also define
+    `score_fn(predictions, outcomes, trial_count)`, which is where the score
+    function belongs: the pin then covers the statistic's computation as
+    well as the strategy's output.
     """
     spec = importlib.util.spec_from_file_location("strategy", artifact_path)
     module = importlib.util.module_from_spec(spec)
@@ -385,8 +416,100 @@ def _load_and_run_artifact(artifact_path, data, parameters):
                 artifact_path
             )
         )
+    return module
 
+
+def _run_artifact(module, data, parameters):
+    """Execute a loaded artifact with parameters from the entry.
+
+    Parameters come from `signal.parameters` in the registry entry — the
+    artifact reads them as arguments, not as embedded constants. This makes
+    polarity drift unrepresentable.
+    """
     return module.run(data, parameters)
+
+
+def _load_and_run_artifact(artifact_path, data, parameters):
+    """Load a strategy artifact and execute it with parameters from the entry.
+
+    Args:
+        artifact_path: Path to the Python artifact.
+        data: Data to pass to the strategy (list of (date, value) tuples).
+        parameters: Dict of parameters from signal.parameters.
+
+    Returns:
+        The return value of the artifact's run() function.
+    """
+    return _run_artifact(_load_artifact(artifact_path), data, parameters)
+
+
+def _resolve_score_fn(score_fn, module, artifact_path, code_hash):
+    """Decide which score function runs, and record where it came from.
+
+    Returns (score_fn, scoring). `scoring` goes into the manifest:
+        {"source": "artifact", "code_hash": <the pin>}   — covered by the pin
+        {"source": "caller",   "code_hash": None}        — attested only
+
+    A supplied callable whose source file IS the pinned artifact counts as
+    pinned: loading the artifact module yourself and passing its score_fn is
+    the same code under the same hash. Anything else is `caller`, which is
+    not refused — a lock that blocks working scripts gets routed around —
+    but is recorded, warned on by `verify`, and printed by `report`.
+    """
+    if score_fn is None:
+        score_fn = getattr(module, "score_fn", None)
+        if score_fn is None:
+            raise ValueError(
+                "Artifact {} defines no score_fn(predictions, outcomes, "
+                "trial_count) and none was supplied. The score function turns "
+                "the artifact's output into the gated statistic; define it in "
+                "the pinned artifact so the pin covers it.".format(
+                    artifact_path))
+        return score_fn, {"source": "artifact", "code_hash": code_hash}
+
+    pinned = os.path.realpath(os.path.abspath(artifact_path))
+    try:
+        source_file = inspect.getsourcefile(score_fn) or inspect.getfile(score_fn)
+    except TypeError:
+        source_file = None
+    if source_file and os.path.realpath(os.path.abspath(source_file)) == pinned:
+        return score_fn, {"source": "artifact", "code_hash": code_hash}
+    return score_fn, {"source": "caller", "code_hash": None}
+
+
+def _refuse_second_eval(entry_id, validation_blocks, block_registry, ledger):
+    """Refuse an `eval` run on a single-use block this entry already measured.
+
+    Keyed on recorded eval rows, not on consumption: consumption is
+    idempotent for the same entry by design, and a run whose pipeline broke
+    after consuming but before its row was written must remain re-runnable
+    (README: "halt, repair, re-run").
+    """
+    single_use = [
+        bid for bid in validation_blocks
+        if block_registry.get_block(bid).get("segment") in _SINGLE_USE_SEGMENTS
+    ]
+    if not single_use:
+        return
+    for row in ledger.all_rows():
+        if row.get("kind") != "eval" or row.get("registry_ref") != entry_id:
+            continue
+        touched = row.get("blocks_touched") or []
+        if isinstance(touched, str):
+            # BACKLOG D-5: some rows carry a comma-joined string.
+            touched = [t for t in touched.split(",") if t]
+        overlap = sorted(set(single_use) & set(touched))
+        if overlap:
+            raise ValueError(
+                "Entry {} already recorded eval run {} on validation block(s) "
+                "{}. A validation block is spent once per hypothesis (E4): a "
+                "second measurement on it is a re-test, and a gate on that "
+                "measurement would be a second verdict on data already "
+                "judged. Nothing was consumed or recorded. To re-render the "
+                "recorded verdict: proofhouse gate {} --replay. To change the "
+                "specification: file an amendment and validate on a block "
+                "that postdates it.".format(
+                    entry_id, row.get("run_id"), overlap, entry_id))
 
 
 def _create_eval_manifest(run_id, code_hash, data_hash, seed=None,

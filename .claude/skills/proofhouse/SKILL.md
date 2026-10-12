@@ -96,15 +96,21 @@ proofhouse verify [--catalog <path>]   # integrity check across every log; 0 err
 
 **There is no `proofhouse eval` command.** An evaluation is a library call,
 `proofhouse.eval.runner.run_eval`, because the tool cannot know how to load
-your data or score your strategy. You write a short script that builds an
-adapter and a score function and hands them to the runner. The runner then
-does everything else in a fixed order: verify the artifact pin, check block
-isolation, consume the block, run the artifact with parameters from the
-entry, score it with the trial count read from the ledger, write a manifest,
-and append a chained ledger row carrying the result's digest. The smallest
+your data. You write a short script that builds an adapter and hands it to
+the runner. The score function, which turns the artifact's output into the
+gated statistic, belongs in the pinned artifact as `score_fn`, so one pin
+covers both; the runner reads it from there when you pass none. If you pass
+one from your script instead, the manifest records that and `verify` warns
+that the number is attested, not verified. The runner then does everything
+else in a fixed order: verify the artifact pin, check block isolation,
+refuse a second measurement on a block this entry already recorded an eval
+on, consume the block, run the artifact with parameters from the entry,
+score it with the trial count read from the ledger, write a manifest, and
+append a chained ledger row carrying the result's digest. The smallest
 honest version of that script is `examples/quickstart/run_eval.py`. Copy it
-and change the adapter and the score function. Do not skip the runner: a
-result that did not pass through it has no manifest and cannot be gated.
+and change the adapter; put your score function in your artifact. Do not
+skip the runner: a result that did not pass through it has no manifest and
+cannot be gated.
 
 ## The workflow, in order
 
@@ -138,9 +144,8 @@ this is the path to know cold.
    whole successor entry, not a diff; `amend` computes the diff and records
    it.
 2. Set `validation_blocks: []` unless you can name a block that did not exist
-   when the change was made. `amend` accepts a successor that re-declares a
-   block its parent spent, and `verify` then reports a permanent error
-   (backlog D-10). The record is append-only, so that error never clears.
+   when the change was made. `amend` refuses a successor that re-declares a
+   block anyone has spent, and its message names the spender and this fix.
 3. `proofhouse amend <parent id> <file> --rationale "..." --impact "..."`.
    One amendment record (A-*) and one successor entry, together or not at
    all.
@@ -170,8 +175,11 @@ Each of these has cost a real session something.
 
 1. **Never re-gate.** A verdict is final. `on_fail` clauses are binding,
    typically "blocks are spent; a revised hypothesis validates on blocks
-   postdating its registration." Analysis of spent data after a verdict is
-   next-cycle input, labelled as such, never part of the verdict.
+   postdating its registration." The tool refuses a second eval on a block
+   the entry already measured and a re-gate after an amendment; the rule
+   still binds any analysis you do outside it. Analysis of spent data after
+   a verdict is next-cycle input, labelled as such, never part of the
+   verdict.
 2. **Power: know which rule you are under.** The Sharpe rule
    `power(effect_size, blocks, prior_trials)` is bounded by the span alone,
    so no effect size rescues a short window. The events rule

@@ -87,10 +87,13 @@ renders the verdict. It takes about a minute. Run it in an empty directory;
 the setup script refuses to overwrite anything.
 
 ```bash
-# Install from a clone. An editable install needs pip 21.3 or newer, and the
-# Python that ships with macOS has an older one, so upgrade pip first.
+# Install from a clone. A plain `pip install "proofhouse[dev]"` works with
+# any pip. The editable install below, which makes edits to the tool take
+# effect without reinstalling, needs pip 21.3 or newer. Check first; only if
+# yours is older, run `python -m pip install --upgrade pip`. The Python that
+# ships with macOS has pip 21.2.
 git clone https://github.com/microtruths/proofhouse
-python -m pip install --upgrade pip
+pip --version
 pip install -e "proofhouse[dev]"
 
 # Set up a demo directory. init creates .proofhouse/ and runs git init when
@@ -110,8 +113,10 @@ proofhouse register hypothesis.yaml
 proofhouse fill H-2026-DEMO power_check
 
 # Record the eval run. There is no `proofhouse eval` command: an eval is a
-# library call, because the tool cannot know how to load your data or score
-# your strategy. run_eval.py is the smallest honest version of that call.
+# library call, because the tool cannot know how to load your data.
+# run_eval.py is the smallest honest version of that call. The score
+# function is not in it: it lives in toy_strategy.py next to the strategy,
+# so the one pin covers both.
 python run_eval.py
 
 # Render the gate against the recorded run (exits 1 on a fail), then the
@@ -128,22 +133,20 @@ problem with the demo:
 | Step | Output | Why |
 |---|---|---|
 | `fill` | power 0.073, **FLAGGED** | The Sharpe power rule is bounded by the span alone. One two-month block cannot reach power 0.5 for any effect size. Recorded, not blocked. |
-| `run_eval.py` | `panel_ic = -0.0276`, p 0.58 | The toy's one-day momentum has no edge in the synthetic series. The runner consumed the V block, wrote a manifest, and appended a ledger row carrying the result's digest. |
+| `run_eval.py` | `panel_ic = -0.0276`, p 0.58, `scoring: artifact` | The toy's one-day momentum has no edge in the synthetic series. The runner read the score function from the pinned artifact, consumed the V block, wrote a manifest that records both, and appended a ledger row carrying the result's digest. |
 | `gate` | **FAIL**, exit 1 | -0.0276 against `> 0.05`, no interpretation. |
-| `report` | `BOUND`, and "sensitivity sweep missing" | The verdict was recomputed from the recorded result and agrees. The entry declares two benchmarks and the demo runs neither, so the memo says a single-benchmark number is not yet a finding. |
+| `report` | `BOUND`, `scoring: PINNED`, and "sensitivity sweep missing" | The verdict was recomputed from the recorded result and agrees, and the statistic was computed by code under the artifact's pin. The entry declares two benchmarks and the demo runs neither, so the memo says a single-benchmark number is not yet a finding. |
 | `verify` | 0 errors, 1 warning | The block ended in February 2024 and the entry was registered in 2026, so the data existed at registration. That is a holdout, not an embargo, and the warning says the claim rests on attestation. |
 | `status` | block `available`, `consumed_by=['H-2026-DEMO']`; `PENDING=['power_check=FLAGGED']` | `available` means the block's data is complete, not that it is unspent; `consumed_by` is the spend. The filled power check still shows under PENDING with its flag because the entry file is immutable and the fill lives in `.proofhouse/fills/`. Both wordings are backlog item D-13. |
 
-Run `python run_eval.py` a second time and the runner records a second run
-rather than refusing, and a plain `gate` on that run records a second
-verdict: the lock is per entry and source run, and a replay with no
-intervening amendment is deliberately allowed. The number is the same because
-the artifact is pinned and the data is hashed. The score function inside
-`run_eval.py` is not pinned, which is backlog item D-12. What the tool will
-not do is let a gate be re-rendered after an amendment on data the first gate
-already saw. That rule is enforced at the gate, the
-[re-run lock](#amendments-and-the-re-run-lock) section explains it, and the
-walkthrough below shows it.
+Run `python run_eval.py` a second time and the runner refuses before spending
+anything: this entry already recorded an eval run on that block, and a
+validation block is measured once per hypothesis. To see the recorded verdict
+again, `proofhouse gate H-2026-DEMO --replay` re-renders it as maintenance,
+outside the trial count. The tool will also not let a gate be re-rendered
+after an amendment on data the first gate already saw. That rule is enforced
+at the gate, the [re-run lock](#amendments-and-the-re-run-lock) section
+explains it, and the walkthrough below shows it.
 
 ### Changing an entry after a verdict
 
@@ -155,10 +158,10 @@ instead of 0.05 now that you have seen the number.
    new file, give it a new id, add `depends_on: [H-2026-DEMO]`, and make the
    change there. The file is the whole successor entry, not a diff; `amend`
    computes the diff.
-2. Set `validation_blocks: []`. The parent spent `demo-2024-01`, and a
-   successor that re-declares a spent block is accepted by `amend` today but
-   sits as a permanent `verify` error (backlog item D-10). A real successor
-   names a block that did not exist when the change was made.
+2. Set `validation_blocks: []`. The parent spent `demo-2024-01`, and `amend`
+   refuses a successor that re-declares a spent block, naming the spender and
+   this fix. A real successor names a block that did not exist when the
+   change was made.
 3. File it. One amendment record and one successor entry, together or not
    at all:
 
@@ -359,6 +362,22 @@ What holds it now:
   (the provenance around them) go on the eval ledger row, which is chained — so
   editing the file contradicts a record that cannot be edited without breaking
   every row after it.
+- **The score function is pinned too.** The artifact that produces
+  predictions was always pinned; the code that turned them into the gated
+  statistic was a callable the eval script handed in, covered by nothing.
+  `run_eval` now reads `score_fn` from the pinned artifact when none is
+  supplied, and the manifest records where it came from, inside the digest.
+  A caller-supplied one is not refused, since a lock that blocks working
+  scripts gets routed around, but `verify` warns that the statistic's
+  computation is attested rather than verified, `report` prints it, and a
+  manifest from before the pin reads UNVERIFIABLE.
+- **A validation block is measured once per hypothesis.** A second eval run
+  by the same entry on a block it already recorded an eval on is refused
+  before anything is consumed. Block consumption alone cannot tell the two
+  apart, because the same entry may legitimately read a block as reserve and
+  later validate on it, so the refusal keys on the recorded eval row.
+  Subperiod runs that decompose a parent eval are exempt, and a run whose
+  pipeline broke before its row was written leaves no row and can be re-run.
 - **The gate row records `source_eval_run_id`, `result_hash` and the exact
   criterion outcomes**, as canonical decimal strings.
 - **`report` reads the recorded row, recomputes from the bound result, and
@@ -547,6 +566,8 @@ verifies clean at the chain level while being wrong:
 - a manifest whose numbers no longer match the digest recorded when the run
   produced them, or a verdict whose recorded criteria cite values that manifest
   does not hold
+- a statistic computed by a score function the artifact pin did not cover
+  (a warning), or by a run from before the pin existed (unverifiable)
 
 ### Three severities, not two
 
