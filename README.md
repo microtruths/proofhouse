@@ -1,6 +1,6 @@
 # proofhouse
 
-Personal research harness — makes it mechanically hard to fool yourself while looking for edge.
+Personal research harness — makes it mechanically hard to fool yourself when testing hypotheses.
 
 ## For agents
 
@@ -635,7 +635,7 @@ the synthetic one.
 # Run all tests
 python -m pytest tests/ -v
 
-# 761 tests. The Phase 0 core:
+# 778 tests. The Phase 0 core:
 #   C-1…C-5:  Canonical serialization (byte-stability)
 #   H-1…H-4:  Hash chain (construction + tamper detection)
 #   B-1…B-9:  Block registry (consumption, seams, promotion, and the

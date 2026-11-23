@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "proofhouse"
 version = "0.1.0"
-description = "Personal research harness — makes it mechanically hard to fool yourself while looking for edge."
+description = "Personal research harness — makes it mechanically hard to fool yourself when testing hypotheses."
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.7"
