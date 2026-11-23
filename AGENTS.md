@@ -41,6 +41,7 @@ proofhouse amend <id> <yaml> --rationale ... --impact ...
 proofhouse report <id>                 # findings memo for the latest gate
 proofhouse verify [--catalog <path>]   # integrity check; 0 errors is the bar
 proofhouse status
+proofhouse install-skill [--user]      # copy the full agent guide into a project
 ```
 
 There is no `proofhouse eval` command. An evaluation is a library call,

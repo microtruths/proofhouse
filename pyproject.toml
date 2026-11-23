@@ -42,5 +42,12 @@ proofhouse = "proofhouse.cli.main:cli"
 where = ["."]
 include = ["proofhouse*"]
 
+# The agent skill ships inside the package so `proofhouse install-skill` can
+# copy it into a project. It is a byte-for-byte copy of
+# .claude/skills/proofhouse/SKILL.md; tests/test_install_skill.py fails if
+# the two differ.
+[tool.setuptools.package-data]
+proofhouse = ["data/skill/SKILL.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

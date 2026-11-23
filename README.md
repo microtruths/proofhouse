@@ -21,9 +21,10 @@ Nothing about how it does this is hidden; a pre-registration tool whose
 workings were secret would prove nothing to anyone.
 
 The guide written for agents is [`.claude/skills/proofhouse/SKILL.md`](.claude/skills/proofhouse/SKILL.md).
-Claude Code loads it automatically inside this repository; copy the directory
-into your own project's `.claude/skills/` to use it there. [`AGENTS.md`](AGENTS.md)
-carries the short version for other agent tools.
+Claude Code loads it automatically inside this repository; run
+`proofhouse install-skill` in your own project to use it there (see
+[Install](#install)). [`AGENTS.md`](AGENTS.md) carries the short version for
+other agent tools.
 
 ## What it's for
 
@@ -79,6 +80,32 @@ the two-stage screening funnel, and the subperiod ledger.
 **Phase 2 adds:** the gate engine, amendments and the re-run lock, pending-field fills,
 cross-record verification, and the findings memo. Registration through verdict now runs
 end to end from the CLI.
+
+## Install
+
+```bash
+pip install git+https://github.com/microtruths/proofhouse
+```
+
+That installs the `proofhouse` command and the library. No clone is needed.
+
+To give an agent the guide, run one of these in the project where the agent
+works:
+
+```bash
+proofhouse install-skill          # ./.claude/skills/proofhouse/SKILL.md
+proofhouse install-skill --user   # ~/.claude/skills/, for every project
+```
+
+The command copies the skill that shipped with the package. It downloads
+nothing. An identical file is left alone, and a file that differs is refused
+unless you pass `--force`. For an agent tool that keeps skills somewhere
+else, `--dest <skills directory>` puts the skill in that directory's
+`proofhouse/` subfolder.
+
+The skill points at the worked examples and at `failure-catalog.md`. Those
+live in this repository, not in the package, so clone it to read them. The
+quick start below works from a clone for the same reason.
 
 ## Quick start
 
@@ -198,6 +225,7 @@ message carries the reason; nothing is recorded when it fires.
 | `proofhouse verify` | Full integrity check across every log. Exits non-zero on error; reports `unverifiable` separately |
 | `proofhouse report <id>` | Render the findings memo from the recorded verdict. Refuses if the record and a recomputation disagree |
 | `proofhouse status` | Show trial counts, block consumption, pending fields |
+| `proofhouse install-skill [--user] [--dest <dir>] [--force]` | Copy the agent skill that ships with the package into a project's skills directory |
 
 `gate` exits non-zero on a fail, so it composes into a script without the
 result having to be read out of prose.
@@ -635,7 +663,7 @@ the synthetic one.
 # Run all tests
 python -m pytest tests/ -v
 
-# 778 tests. The Phase 0 core:
+# 787 tests. The Phase 0 core:
 #   C-1…C-5:  Canonical serialization (byte-stability)
 #   H-1…H-4:  Hash chain (construction + tamper detection)
 #   B-1…B-9:  Block registry (consumption, seams, promotion, and the

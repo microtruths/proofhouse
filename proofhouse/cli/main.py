@@ -22,6 +22,8 @@ Phase 2.5 §5:
 Later addition:
     proofhouse screen     — screen a batch against its recorded stage-1 runs
                             and record the decision (a SCR-* ledger row)
+    proofhouse install-skill — copy the agent skill that ships with the
+                            package into a project's skills directory
 
 "explore being fast is the single most load-bearing UX property in the
  project — the parent plan identifies 'you become the leak' as the
@@ -914,6 +916,71 @@ def reject(idea, reason, entry_id):
         ledger_anchor=_last_run_id(_ledger(root)),
     )
     click.echo("recorded {}".format(record["rejection_id"]))
+
+
+def _packaged_skill_path():
+    """The copy of the agent skill that shipped inside this install."""
+    import proofhouse
+
+    return os.path.join(
+        os.path.dirname(os.path.abspath(proofhouse.__file__)),
+        "data", "skill", "SKILL.md")
+
+
+@cli.command("install-skill")
+@click.option("--user", "user_wide", is_flag=True,
+              help="Install into ~/.claude/skills, for every project.")
+@click.option("--dest", default=None, type=click.Path(file_okay=False),
+              help="A skills directory to install into instead; the skill "
+                   "goes in its proofhouse/ subfolder.")
+@click.option("--force", is_flag=True,
+              help="Replace an existing skill file that differs.")
+def install_skill(user_wide, dest, force):
+    """Copy the proofhouse agent skill into a project.
+
+    With no option the skill goes to .claude/skills/proofhouse/SKILL.md
+    under the current directory, where Claude Code loads it. An identical
+    file is left alone; a different one is refused unless --force is given.
+    """
+    if user_wide and dest:
+        raise click.ClickException("Pass --user or --dest, not both.")
+
+    source = _packaged_skill_path()
+    if not os.path.isfile(source):
+        raise click.ClickException(
+            "The skill file is missing from this install ({}). Reinstall "
+            "proofhouse, or copy .claude/skills/proofhouse/ from a clone."
+            .format(source))
+
+    if dest:
+        skills_dir = dest
+    elif user_wide:
+        skills_dir = os.path.join(os.path.expanduser("~"), ".claude", "skills")
+    else:
+        skills_dir = os.path.join(os.getcwd(), ".claude", "skills")
+    target = os.path.join(os.path.abspath(skills_dir), "proofhouse", "SKILL.md")
+
+    with open(source, "rb") as fh:
+        packaged = fh.read()
+
+    existed = os.path.exists(target)
+    if existed:
+        with open(target, "rb") as fh:
+            current = fh.read()
+        if current == packaged:
+            click.echo("Already up to date: {}".format(target))
+            return
+        if not force:
+            raise click.ClickException(
+                "{} exists and differs from the skill in this install. "
+                "Nothing was written. Re-run with --force to replace it."
+                .format(target))
+
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "wb") as fh:
+        fh.write(packaged)
+    click.echo("{} the proofhouse skill at {}".format(
+        "Replaced" if existed else "Installed", target))
 
 
 if __name__ == "__main__":
