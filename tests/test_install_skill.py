@@ -10,7 +10,9 @@ pin:
   * the default run writes under the current directory, --user under the
     home directory, --dest under the directory it is given;
   * an identical file is left alone, a different one is refused with
-    nothing written, and --force replaces it.
+    nothing written, and --force replaces it;
+  * `init` points at the command until the project or the home directory
+    has the skill, and never writes the skill itself.
 """
 
 import os
@@ -124,6 +126,24 @@ class TestInstallSkill(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("Replaced", result.output)
         self.assertEqual(_read(self._project_target()), _read(REPO_SKILL))
+
+    def test_init_points_at_the_command_until_the_skill_is_there(self):
+        """init hints at install-skill and writes no skill itself."""
+        first = self.runner.invoke(cli, ["init"], env=self.env)
+        self.assertEqual(first.exit_code, 0, first.output)
+        self.assertIn("proofhouse install-skill", first.output)
+        self.assertFalse(os.path.exists(self._project_target()))
+
+        self.assertEqual(self._run().exit_code, 0)
+        second = self.runner.invoke(cli, ["init"], env=self.env)
+        self.assertEqual(second.exit_code, 0, second.output)
+        self.assertNotIn("install-skill", second.output)
+
+    def test_init_stays_quiet_when_the_home_directory_has_the_skill(self):
+        self.assertEqual(self._run("--user").exit_code, 0)
+        result = self.runner.invoke(cli, ["init"], env=self.env)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertNotIn("install-skill", result.output)
 
     def test_missing_packaged_file_is_reported_not_crashed(self):
         import proofhouse.cli.main as main

@@ -120,6 +120,14 @@ def init():
     click.echo("  .proofhouse/manifests/")
     click.echo("  .proofhouse/blocks/")
 
+    # Point at the agent guide, unless this project or the home directory
+    # already has it. A hint only: init writes nothing outside .proofhouse/.
+    skill_tail = os.path.join(".claude", "skills", "proofhouse", "SKILL.md")
+    if not any(os.path.exists(os.path.join(base, skill_tail))
+               for base in (root, os.path.expanduser("~"))):
+        click.echo("Working with an agent here? `proofhouse install-skill` "
+                   "copies the agent guide into this project.")
+
 
 @cli.group()
 def blocks():
