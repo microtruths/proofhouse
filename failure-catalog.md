@@ -10,7 +10,11 @@
 
 Every error found across 6 review rounds, 6+ agent reviews, plan versions v1–v10, and amendments A-1–A-3. Each entry: what happened, who made it, how it was caught, the general lesson. **Read this before reviewing any experiment plan or implementing any spec.** These are calibration examples — the abstract checklists in the skills correspond to these concrete instances.
 
-Errors were made by every participant: the human's plan drafts, the primary reviewer (Fable), and executing agents. Treat reviewer output with the same skepticism as author output.
+Errors were made at every stage: in the plan drafts, by the primary reviewer (Fable), and by executing agents. Every plan was written by an AI agent and approved by the human, so "plan" in the "Made by" column means an agent-written plan. Treat reviewer output with the same skepticism as author output.
+
+> **Correction, 2026-11-24.** This paragraph used to attribute the plan drafts to the human. That was
+> wrong: the agent that compiled the catalog did not know the plans had been drafted by AI agents.
+> No entry changed.
 
 ## Design errors (found in plan review)
 
